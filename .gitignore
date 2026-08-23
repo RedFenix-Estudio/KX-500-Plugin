@@ -7,10 +7,14 @@ package-lock.json
 
 # Captures / dumps (pueden ser pesados)
 captures/
+tools/captures/
 *.pcapng
 *.pcap
 *.bin
 *.hid
+
+# Downloads / installers (los .exe descargados no van al repo — son ~95MB)
+tools/*.exe
 
 # IDE
 .vscode/
