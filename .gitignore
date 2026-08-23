@@ -1,0 +1,33 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Captures / dumps (pueden ser pesados)
+captures/
+*.pcapng
+*.pcap
+*.bin
+*.hid
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.zip
+
+# Secrets / locals
+.env
+.env.local
+config.local.js
