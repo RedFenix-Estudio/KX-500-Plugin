@@ -9,6 +9,7 @@ const effects = {
     breathing: require('./breathing'),
     wave: require('./wave'),
     reactive: require('./reactive'),
+    typing_reactive: require('./typing_reactive'),
 };
 
 module.exports = effects;
