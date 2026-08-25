@@ -35,3 +35,10 @@ build/
 .env
 .env.local
 config.local.js
+
+# API Monitor
+tools/API-Monitor/API-Monitor.zip
+# API Monitor drivers (descargar de rohitab.com)
+tools/API-Monitor/*.sys
+tools/API-Monitor/*.dll
+tools/API-Monitor/*.zip

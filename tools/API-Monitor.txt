@@ -1,0 +1,12 @@
+﻿## API Monitor (capturar bytes HID)
+Para capturar los HID Feature Reports del KX-500 con API Monitor:
+
+1. Descarga API Monitor Personal Edition v2 r13:
+   https://www.rohitab.com/apimonitor/downloads
+2. Ejecuta apimonitor-x64.exe como Administrador
+3. Monitoring > Enable Monitoring
+4. Filter > Module: hid.dll, Function: HidD_SetFeature + HidD_SetOutputReport
+5. Inicia el driver oficial y aplica un color
+6. Los bytes que ves son el header HID del KX-500
+
+Ve examples/CAPTURE-HID.md para mas detalle.
