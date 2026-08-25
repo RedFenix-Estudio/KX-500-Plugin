@@ -8,10 +8,58 @@
 |---|---|
 | USB VID | `0x320F` |
 | USB PID | `0x5008` |
-| Interfaz HID RGB | `FF1C:0092` (Vendor Defined, OUT endpoint) |
+| Versión firmware | `0x0101` (REV_0101 visible en registry) |
+| Driver oficial path | `C:\Program Files (x86)\CHECKPOINT KX-500\CHECKPOINT_KX_500.exe` |
+| Driver service | `HidServ.dll` (35 KB) — usa HidD_SetFeature/GetFeature, HidP_SetUsageValue, etc. |
+| Interfaz HID RGB | `FF1C:0092` (Vendor Defined, OUT endpoint) — **col04** |
 | Path típico (Win) | `\\\\?\\HID#VID_320F&PID_5008#...` |
 | Layout | Full-size US ANSI 104 keys (con numpad, F1-F12, nav cluster, Win/Fn, Menu) |
-| Driver oficial | `CHECKPOINT KX-500 Keyboard Driver.exe` (instalado y funcional) |
+
+## 🔍 Descriptor HID — mapa completo del dispositivo (2026-08-25)
+
+Confirmado leyendo `HKLM\SYSTEM\CurrentControlSet\Enum\HID\VID_320F&PID_5008\*\HardwareID` y `Get-PnpDevice`:
+
+| Colección | Usage Page | Usage | Tipo | Función probable |
+|---|---|---|---|---|
+| MI_00 | `0x0001` | `0x0006` | Generic Desktop / Keyboard | BIOS-mode keyboard (USB boot) |
+| MI_01 Col01 | `0x0001` | `0x0006` | Generic Desktop / Keyboard | Keyboard HID completo (NKRO) |
+| MI_01 Col02 | `0x0001` | `0x000C` | Generic Desktop / Wireless Radio | Wireless radio controls HID |
+| MI_01 Col03 | `0x000C` | `0x0001` | Consumer / Consumer Control | Media keys (play/pause, volume, etc.) |
+| **MI_01 Col04** | **`0xFF1C`** | **`0x0092`** | **Vendor Defined** | **🎨 RGB CONTROL — NUESTRO OBJETIVO** |
+
+**Implicaciones para el plugin Lite:**
+- ✅ `Validate(usage_page=0xFF1C, usage=0x0092)` matchea SOLO el canal RGB (Col04)
+- ✅ `Validate(usage_page=0x0001, usage=0x0006)` matchea el keyboard HID (Col01) — habilita `typing_reactive`
+- ✅ El plugin actual está bien targeteado
+
+**Hallazgos del Procmon logs (10 archivos .pml, 44 GB):**
+- Los .pml NO contienen tráfico HID real (las APIs HidD_SetFeature son kernel-mode y bypass Procmon)
+- Pero **sí confirman** que el driver oficial `CHECKPOINT_KX_500.exe` está en `C:\Program Files (x86)\CHECKPOINT KX-500\`
+- Y enumeran las 5 colecciones HID correctamente
+- **Conclusión:** para capturar bytes HID RGB hace falta **USBPcap** (intercepta USB físico, no API-level)
+
+## Hallazgos del RE previo (Ghidra + decompilación)
+
+### `HidServ.dll` (35 KB) — HID class driver wrapper
+
+APIs HID que importa y usa:
+- `HidD_SetFeature` / `HidD_GetFeature` → **feature reports** (canal primario del RGB)
+- `HidD_GetAttributes`, `HidD_GetCaps`, `HidD_GetHidGuid` → enumeración
+- `HidP_GetUsages`, `HidP_SetUsages`, `HidP_GetUsageValue`, `HidP_SetUsageValue` → manipulación de Usages
+- `HidD_FlushQueue`, `HidD_SetConfiguration` → control de buffers
+- `HidP_TranslateUsagesToI8042ScanCodes` → convierte HID usages a scan codes PS/2
+- `HidP_GetExtendedAttributes`, `HidP_UsageListDifference` → features avanzados
+
+**Implicación:** el driver oficial habla con el KX-500 principalmente vía **feature reports** (no output reports). El plugin Lite usa `device.send_report()` que es exactamente eso.
+
+Funciones exportadas del HidServ.dll:
+- `Init`, `End`, `Debug`
+- `RequestGetDeviceCount`, `RequestGetFeature`, `RequestSetFeature`
+- `RequestWrite`, `RequestWriteOne`
+- `RequestAsyncRead`
+- `RequestStatusGet`, `RequestStatusWrite`, `RequestStatusSetFeature`
+
+El driver `CHECKPOINT_KX_500.exe` (4 MB) llama al HidServ.dll vía window messages (msg `0x40D`).
 
 ## Capacidades observadas del teclado (2026-08-23)
 

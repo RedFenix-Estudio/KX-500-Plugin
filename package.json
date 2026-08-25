@@ -2,9 +2,18 @@
   "name": "kx500-signalrgb-plugin",
   "version": "0.1.0",
   "description": "SignalRGB plugin for the Checkpoint Gaming KX-500 (NA-KB-1001 / Naruto Edition) keyboard. Reverse-engineered HID protocol, open source.",
-  "main": "plugin.js",
+  "main": "KX500_Lite.js",
+  "exports": {
+    ".": "./KX500_Lite.js",
+    "./src/layout": "./src/layout.js",
+    "./src/protocol": "./src/protocol.js",
+    "./src/effects": "./src/effects.js"
+  },
+  "type": "module",
   "scripts": {
-    "test": "node test/smoke.js"
+    "test": "node test/validate.js && node test/smoke.js",
+    "validate": "node test/validate.js",
+    "smoke": "node test/smoke.js"
   },
   "keywords": [
     "signalrgb",

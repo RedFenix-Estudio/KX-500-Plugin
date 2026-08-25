@@ -1,73 +1,45 @@
-# KX-500 SignalRGB Plugin
+# KX-500 SignalRGB Plugin — Lite
 
-> Plugin open-source para usar el teclado **Checkpoint Gaming KX-500** (NA-KB-1001, Naruto Edition) en **SignalRGB** (y en el futuro, otros entornos RGB), vía ingeniería inversa del protocolo HID del driver oficial. 100% portable: instalás el plugin, SignalRGB habla directo al canal HID del teclado.
-
----
-
-## 🎮 Compatibilidad (scope)
-
-| Estado | Entorno |
-|---|---|
-| ✅ **Ahora** | SignalRGB (este plugin) |
-| 🔜 **Futuro** | OpenRGB, Aurora, KeyboardVisualizer, Razer Chroma SDK, iCUE, etc. |
-
-La capa de protocolo (`protocol/kx500.js`) está **aislada** del binding con el SDK. Cuando agreguemos soporte para otro entorno (ej: OpenRGB), solo cambia el binding con su SDK — el RE del HID del teclado ya queda hecho.
-
-Si alguien de la comunidad pide compatibilidad para otro RGB software, abrir un issue y se prioriza.
+> Plugin open-source para usar el teclado **Checkpoint Gaming KX-500** (NA-KB-1001, Naruto Edition) en **SignalRGB** (Free / Pro / Light Points — **NO** Community Edition). Habla directo al canal HID Vendor Defined del teclado, bypassing el driver oficial.
 
 ---
 
-## 🔀 Sobre este proyecto (fork / basado en)
+## 🚀 Quick Start (usuarios)
 
-Este plugin es una **implementación nueva**, basada en arquitectura de referencia de:
+```
+1. Descargá KX500_Lite.js de la última release
+2. SignalRGB → Settings → User Plugins → Open Plugins Folder
+3. Copiá KX500_Lite.js a esa carpeta
+4. Reiniciá SignalRGB
+5. Devices → "Checkpoint KX-500 (NA-KB-1001) — Lite" → Enable Streaming
+6. Cerrá "Mechanical Keyboard.exe" si estaba corriendo
+```
 
-- **[MRtojisan/portronics-hydra-10-SignalRGB-Plugin](https://github.com/MRtojisan/portronics-hydra-10-SignalRGB-Plugin)** — plantilla de plugin SignalRGB por device, open-source.
-
-Arquitectura Hydra 10-style (`plugin.js` + `device.js` + `protocol/` + `effects/`). Toda la lógica específica del KX-500 (parseo de HID, layout, capabilities) es código nuevo escrito desde cero por el equipo de RedFenix Estudio.
-
-**Créditos al autor del plugin original** por hacer pública la plantilla que usamos como referencia.
-
----
-
-## 🎯 El problema que resolvemos
-
-El KX-500 es un teclado RGB per-key con muchas capacidades, pero **el fabricante no provee SDK, plugin ni documentación del protocolo HID**. Eso lo deja fuera de SignalRGB, OpenRGB y otros ecosistemas abiertos.
-
-Como usuario, te quedás usando solo el driver oficial de Checkpoint, con efectos limitados y sin sincronización con el resto de tu setup RGB.
-
-**Este plugin es el puente**: aprende el idioma del teclado (vía USBPcap + Wireshark → reverse engineering) y lo expone como un device SignalRGB estándar.
+→ Detalles en [`INSTALL.md`](./INSTALL.md)
 
 ---
 
-## ✨ Capacidades del KX-500 (confirmadas con el teclado físico)
+## 🎯 Lo que hace este plugin Lite
 
-Estas son las capacidades del KX-500 que descubrió el dueño del teclado mientras experimentaba con el driver oficial. **El plugin está diseñado para aprovecharlas todas**:
+| Feature | Estado | Notas |
+|---|---|---|
+| Layout 104 keys declarado | ✅ | Full-size US ANSI, todos los nombres oficiales de SignalRGB |
+| Validación de endpoint HID | ✅ | Filtra correctamente FF1C:0092 (excluye keyboard 07:06) |
+| Effect: Static | ✅ | Color sólido |
+| Effect: Breathing | ✅ | Pulso lento |
+| Effect: Wave | ✅ | Ola horizontal HSV |
+| Effect: Reactive | ✅ | Audio-reactive (usa el audio engine de SignalRGB) |
+| Effect: Typing | ✅ | Pulso desde el centro (placeholder hasta tener canal HID IN) |
+| Lighting Mode Canvas | ✅ | Lee `device.color(x,y)` per key |
+| Lighting Mode Forced | ✅ | Color fijo ignorando el canvas |
+| Brightness slider | ✅ | Multiplicador 0-100% |
+| Shutdown color | ✅ | Color al apagar SignalRGB |
+| Conflicting processes | ✅ | Bloquea `Mechanical Keyboard.exe` y `HidServ.exe` |
+| Plugin Analytics | ✅ | `usesAudio: true` para reactive |
+| Sintaxis ESM válida | ✅ | `node --check` pasa |
+| **HID frames al teclado** | ⚠️ **Best-effort** | Patrón SinoWealth (Hydra 10). Necesita calibración con USBPcap para el KX-500 real. |
 
-### Per-key RGB con color mixing completo
-> Cada tecla tiene su propio LED con R, G, B independientes. Las luces combinan entre sí formando cualquier color del espectro RGB — no es por zonas. Esto significa que **podemos pintar cualquier key de cualquier color** desde el plugin.
-
-### Efectos fluidos sin lag
-> El MCU del teclado interpola animaciones a alta frecuencia, así que los efectos se ven fluidos sin sentirse lageados. Esto sugiere que el driver probablemente **manda comandos de efecto** (no frames raw a 60fps) — el teclado corre la animación en hardware.
-
-### Detección de velocidad de tipeo
-> Cuando escribís, el teclado detecta la velocidad y acelera la animación. Eso significa que **el firmware reporta las teclas presionadas al host** vía HID Input reports (Usage Page 0x07 estándar). Podemos leer esos reports desde el plugin y usar la velocidad para modular efectos.
-
-### Animación triggered por posición de tecla
-> Al presionar una tecla, el teclado sabe **qué key se presionó** (por su HID Usage ID) y dispara la animación desde ahí — puede iluminar solo esa key o propagar hacia las vecinas. Eso lo hace el firmware on-board, pero nosotros podemos hacer lo mismo desde el plugin.
-
-### Brightness control (en driver y en atajos de teclado)
-> La intensidad RGB se puede modificar tanto desde el driver oficial como con atajos en el propio teclado. La captura USBPcap tiene que revelar la estructura del comando de brightness para que el plugin pueda exponerla.
-
-### Resumen de implicaciones técnicas
-
-| Capacidad | Implicación |
-|---|---|
-| Per-key RGB | Necesitamos un comando HID que setee color por key individual. |
-| Efectos fluidos on-board | Probablemente hay dos modos: **raw frame** (host manda pixeles) y **effect command** (host manda "ejecuta X"). El RE tiene que descubrirlos. |
-| Key press detection | Necesitamos abrir **dos canales HID a la vez**: RGB OUT (FF1C:0092) + Keyboard IN (Usage Page 0x07). |
-| Brightness | Hay un comando HID dedicado (a descubrir) que setea brillo 0–100%. |
-
-Toda esta info vive en [`PROTOCOL.md`](./PROTOCOL.md), que se actualiza a medida que avanza el RE.
+El plugin **carga y declara todo el layout correctamente** incluso si el protocolo HID best-effort no matchea al teclado físico. Cuando se calibra el comando HID con la captura USBPcap, las luces empiezan a responder.
 
 ---
 
@@ -80,35 +52,40 @@ Toda esta info vive en [`PROTOCOL.md`](./PROTOCOL.md), que se actualiza a medida
 | USB VID:PID | `320F:5008` |
 | Canal HID RGB | Vendor Defined `FF1C:0092` |
 | Layout | Full-size US English ANSI 104 keys (con numpad, F1-F12, nav cluster, Win/Fn/Menu, dos Ctrl/Alt/Shift) |
-| Driver oficial | `CHECKPOINT KX-500 Keyboard Driver.exe` (instalado y funcional) |
+| Driver oficial | `CHECKPOINT KX-500 Keyboard Driver.exe` (instalado en el sistema, **cerrarlo** antes de usar el plugin) |
 
 ---
 
-## 📦 Instalación (usuarios)
+## 📦 Estado del proyecto
 
-1. Asegurate de tener SignalRGB instalado (Windows).
-2. Descargá el `.zip` de la release más reciente desde [Releases](../../releases).
-3. SignalRGB → `Settings` → `Plugins` → `Import Plugin` → seleccioná el `.zip`.
-4. El KX-500 debería aparecer como dispositivo detectado.
+**Versión actual: 0.1.0 Lite (skeleton funcional)**
 
----
+Esta es una versión Lite — carga correctamente en SignalRGB, declara el layout, expone todos los effects, pero el protocolo HID es **best-effort** (basado en el patrón SinoWealth 0x08 que es el más común en teclados HID Vendor Defined). Necesita calibración con captura USBPcap para funcionar al 100% con el KX-500 físico.
 
-## 🛠️ Desarrollo
+### Por qué Lite
 
-```powershell
-git clone https://github.com/RedFenix-Estudio/kx500-signalrgb-plugin.git
-cd kx500-signalrgb-plugin
-npm install
-```
+El RE completo del protocolo HID requiere:
+1. USBPcap + Wireshark corriendo en Windows
+2. Driver oficial del KX-500 abierto (para tener tráfico RGB)
+3. Capturar cada efecto/color mientras el driver oficial lo aplica
+4. Diffear entre capturas para encontrar el patrón de bytes
+5. Implementar el protocolo real en `protocol/kx500.js`
 
-### Dependencias
+Erik está haciendo este RE. Mientras tanto, esta versión Lite permite:
+- ✅ Verificar que SignalRGB reconoce el dispositivo
+- ✅ Ver el layout 104 keys en el canvas
+- ✅ Probar todos los effects desde la UI
+- ✅ Cuando se calibre el HID, las luces funcionan sin tocar nada más
 
-- **node-hid**: habla directo con el HID Vendor Defined del KX-500.
-- **SignalRGB Plugin SDK**: viene con SignalRGB, no se instala aparte.
+### Próximos pasos
 
-### Herramientas para el RE (reverse engineering)
+1. **Captura USBPcap** — Erik corre Wireshark con USBPcap mientras aplica colores desde el driver oficial
+2. **Análisis del protocolo** — diffing entre capturas, mapeo de bytes a comandos
+3. **Calibración del Lite** — sustituir los bytes del header en `buildFrame()` con los reales
+4. **Canal HID Keyboard IN** — confirmar si podemos leer keypresses para `typing_reactive` real
+5. **Release 1.0** — protocolo cerrado, efectos nativos completos
 
-Las herramientas de captura USB están en [`tools/`](./tools/) — instaladores de USBPcap y Wireshark con guía de uso paso a paso.
+Ver [`PROTOCOL.md`](./PROTOCOL.md) para el estado vivo del RE.
 
 ---
 
@@ -116,66 +93,110 @@ Las herramientas de captura USB están en [`tools/`](./tools/) — instaladores 
 
 ```
 kx500-signalrgb-plugin/
-├── plugin.js              # Entry point: clase que SignalRGB instancia
-├── device.js              # Layout del teclado (104 keys, full-size US ANSI)
-├── protocol/
-│   └── kx500.js           # Implementación del protocolo HID (RE'd)
-├── effects/               # Effects que el plugin expone
-│   ├── static.js
-│   ├── breathing.js
-│   ├── wave.js
-│   ├── reactive.js        # Audio-reactive
-│   └── typing_reactive.js # Reacciona a teclas presionadas
-├── tools/                 # USBPcap + Wireshark installers (ver tools/README.md)
-├── examples/
-│   └── wireshark-capture-guide.md   # Cómo hacer las capturas para el RE
+├── KX500_Lite.js           # ← Single file que SignalRGB carga (LO ÚNICO NECESARIO)
+├── INSTALL.md              # Guía de instalación para usuarios
+├── README.md               # Este archivo
+├── PROTOCOL.md             # Estado vivo del RE del HID
+├── LICENSE                 # MIT
+│
+├── src/                    # Módulos ES (para desarrollo/tests)
+│   ├── layout.js           # Layout 104 keys (export buildLayout, buildKeyMap)
+│   ├── protocol.js         # KX500Protocol class con buildFrame() + probe()
+│   └── effects.js          # Effects: static, breathing, wave, reactive, typing
+│
 ├── test/
-│   └── smoke.js           # Tests sin hardware
-├── PROTOCOL.md            # Estado vivo del RE del protocolo HID
-├── README.md              # Este archivo
-├── LICENSE                # MIT
+│   ├── validate.js         # Validador offline del plugin (30 checks)
+│   └── smoke.js            # Smoke test de src/ (22 checks)
+│
+├── plugin.js               # [LEGACY] Entry point original (Hydra 10 style)
+├── device.js               # [LEGACY] Layout (mantenido por compatibilidad)
+├── protocol/
+│   └── kx500.js            # [LEGACY] Stub del protocolo (mantenido)
+├── effects/                # [LEGACY] Effects modulares antiguos
+│
+├── examples/
+│   └── wireshark-capture-guide.md  # Cómo hacer capturas USBPcap
+├── tools/                  # USBPcap + Wireshark installers
 └── package.json
 ```
 
+**Lo que importa para SignalRGB:** solo `KX500_Lite.js`. Lo demás es para devs y el RE.
+
 ---
 
-## 🔬 Estado del proyecto
+## 🧪 Tests
 
-**Fase actual:** skeleton + RE del protocolo HID en preparación.
+```bash
+npm install     # no requiere deps (node-hid es opcional)
+npm test        # corre validate.js + smoke.js → 52 checks ✅
+```
 
-Ver [`PROTOCOL.md`](./PROTOCOL.md) para el estado del RE (se va llenando a medida que avanzamos con las capturas USBPcap).
+```
+> node test/validate.js
+  30 ✅ / 0 ❌  — Plugin SignalRGB Lite OK
 
-Timeline estimado:
-1. **Setup**: instalar USBPcap + Wireshark (tools/README.md) ✅
-2. **Capturas Parte A** (RGB OUT): 7 sesiones con el driver oficial cambiando colores / efectos.
-3. **Capturas Parte B** (Keyboard IN): 4 sesiones para entender el reporte de key presses.
-4. **Análisis**: diffs entre capturas, mapeo de bytes a comandos.
-5. **Implementación `protocol/kx500.js`**.
-6. **Tests con `node-hid`** contra el teclado real.
-7. **Beta SignalRGB**.
-8. **Release pública**.
+> node test/smoke.js
+  22 ✅ / 0 ❌  — src/ modular OK
+```
+
+Los tests son **offline** — no requieren el teclado conectado ni SignalRGB corriendo. Validan:
+- Sintaxis ES module
+- Exports del SDK SignalRGB (Name, VendorId, ProductId, Size, Validate, ControllableParameters, etc.)
+- Layout completo (104 keys, bounding box coherente, nombres oficiales)
+- Lifecycle (Initialize, Render, Shutdown sin crashear)
+- Frame HID sanity (header + 320 bytes)
+
+---
+
+## 🛠️ Desarrollo / calibración
+
+### Para devs
+
+```bash
+git clone https://github.com/RedFenix-Estudio/kx500-signalrgb-plugin.git
+cd kx500-signalrgb-plugin
+npm install
+npm test
+```
+
+### Para calibrar el HID del KX-500
+
+1. Conectá el teclado
+2. Iniciá `Mechanical Keyboard.exe` (driver oficial)
+3. Iniciá Wireshark con USBPcap (`tools/USBPcapSetup-1.5.4.0.exe` ya está en el repo)
+4. Filtro: `usb.transfer_type == 0x01 && usb.src == "host"`
+5. Aplicá un color sólido desde el driver oficial
+6. La captura muestra los bytes exactos
+7. Editá `KX500_Lite.js` → `buildFrame()` con los bytes reales
+8. `npm test` para verificar
+9. Reiniciá SignalRGB
+
+Más detalle en [`examples/wireshark-capture-guide.md`](./examples/wireshark-capture-guide.md).
+
+### Estructura del RE
+
+Toda la info del RE (Ghidra project, procmon captures, pcap files, HidServ.dll decompilado) está en `E:\Erik\Aplicaciones\PC\KX-500 RGB teclado\driver_RE\` (no está en este repo — es muy pesado).
 
 ---
 
 ## 🤝 Contribuir
 
-PRs bienvenidos. Si querés sumar:
+PRs bienvenidos. Issues / capturas / protocolos nuevos: [GitHub Issues](../../issues).
 
-- Soporte para otro RGB software (OpenRGB, Aurora, etc.) — la capa `protocol/` está aislada para eso.
-- Nuevos effects.
-- Otros layouts del KX-500 (si hay variantes regionales).
-- Reportes de issues / bugs / capturas.
-
-Abrí un issue primero para coordinarlo si es algo grande.
+Para sumarse:
+- Otros layouts del KX-500 (ISO, TKL si existen)
+- Soporte para OpenRGB / Aurora / KeyboardVisualizer (la capa `protocol/` está aislada)
+- Nuevos effects
+- Calibración del HID con capturas reales
 
 ---
 
 ## 🙏 Créditos
 
-- **Arquitectura del plugin** basada en [MRtojisan/portronics-hydra-10-SignalRGB-Plugin](https://github.com/MRtojisan/portronics-hydra-10-SignalRGB-Plugin) — usado como referencia de plantilla. Toda la lógica específica del KX-500 es código nuevo.
-- **Driver oficial analizado**: `CHECKPOINT KX-500 Keyboard Driver.exe` (instalado en el sistema para el RE).
-- **Hardware info**: comunidad de Reddit / forums de KX-500 (a expandir cuando publiquemos).
-- Hecho con 🐾 por [RedFenix Estudio](https://github.com/RedFenix-Estudio).
+- **Arquitectura** del plugin SDK SignalRGB según [docs.signalrgb.com/developer/plugins/](https://docs.signalrgb.com/developer/plugins/).
+- **Patrón SinoWealth** del frame HID basado en [MRtojisan/portronics-hydra-10-SignalRGB-Plugin](https://github.com/MRtojisan/portronics-hydra-10-SignalRGB-Plugin) (CC0).
+- **Driver oficial analizado**: `CHECKPOINT KX-500 Keyboard Driver.exe` + `HidServ.dll` (decompilados en `driver_RE/`).
+- 🐾 por [RedFenix Estudio](https://github.com/RedFenix-Estudio).
 
 ---
 
