@@ -1,253 +1,98 @@
-/**
- * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Plugin — Lite v2                               ║
- * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
- * ║                                                                  ║
- * ║  v2 fixes (2026-08-25):                                          ║
- * ║    - ProductId ahora retorna [0x5008] (array, no single value)   ║
- * ║    - Initialize() llama device.setName/setSize/setControllableLeds║
- * ║    - device.pause(1) después de cada send_report                 ║
- * ║    - Validate() más permisivo (interface + usage_page + usage)   ║
- * ║    - globals inyectadas (shutdownColor, LightingMode, forcedColor)║
- * ║    - device.notify() en errores                                  ║
- * ║    - Packet pad a 520 bytes (estándar SinoWealth)                ║
- * ║                                                                  ║
- * ║  Repo: https://github.com/RedFenix-Estudio/KX-500-Plugin         ║
- * ║  Basado en: Hydra 10, Redragon K626, PMO Wave75 Pro plugins      ║
- * ╚══════════════════════════════════════════════════════════════════╝
+/*
+ * KX-500 SignalRGB Plugin — Lite (minimalista)
+ *
+ * Single-file plugin para SignalRGB.
+ * Checkpoint Gaming KX-500 (NA-KB-1001), full-size US ANSI, 104 keys.
+ *
+ * Lo único que hace:
+ *   1. Declara el dispositivo (VID 0x320F, PID 0x5008, interface HID RGB 0xFF1C:0x0092)
+ *   2. Cada ~30ms lee device.color(x,y) por key y manda el frame al HID del teclado
+ *   3. Apaga el teclado limpio al salir
+ *
+ * Lo que NO hace (todavía):
+ *   - Effects propios: SignalRGB los aplica sobre el canvas antes de llamar Render.
+ *   - typing_reactive real: no abrimos el canal Keyboard HID IN.
+ *   - Luces funcionando: depende del comando HID exacto (header best-effort abajo).
+ *
+ * Repo: https://github.com/RedFenix-Estudio/KX-500-Plugin
  */
 
 'use strict';
 
-// NOTA: DeviceDiscovery solo se usa para fallback de modelos no encontrados.
-// Como el KX-500 es nuestro único modelo, no lo necesitamos. SignalRGB
-// provee este módulo automáticamente cuando carga el plugin, pero no es
-// necesario para el caso normal.
-// import DeviceDiscovery from "@SignalRGB/DeviceDiscovery";
+// ════════════════════════════════════════════════════════════════════
+// HID — descriptor del KX-500 (confirmado en registry el 2026-08-25)
+// ════════════════════════════════════════════════════════════════════
+const VID              = 0x320F;
+const PID              = 0x5008;
+const RGB_USAGE_PAGE   = 0xFF1C;   // Vendor Defined
+const RGB_USAGE        = 0x0092;
 
-// ════════════════════════════════════════════════════════════════════
-// METADATA
-// ════════════════════════════════════════════════════════════════════
-const AUTHOR = "RedFenix Estudio";
-const AUTHOR_GITHUB_URL = "https://github.com/RedFenix-Estudio";
-const DOCUMENTATION_URL = "https://github.com/RedFenix-Estudio/KX-500-Plugin";
-const DEVICE_NAME = "Checkpoint KX-500 (NA-KB-1001)";
-
-// ════════════════════════════════════════════════════════════════════
-// HID — VID/PID + descriptor del KX-500
-// ════════════════════════════════════════════════════════════════════
-const KX500_VID = 0x320F;
-const KX500_PID = 0x5008;
-const USAGE_PAGE_RGB = 0xFF1C;   // MI_01 Col04 — Vendor Defined
-const USAGE_RGB = 0x0092;
-const HID_REPORT_SIZE = 520;      // Estándar SinoWealth (Hydra 10 / Redragon)
+// Header HID best-effort (estilo SinoWealth, hidr 10 / Redragon KS82B).
+// Si las luces no encienden: capturar con USBPcap y editar esta línea.
+const HID_HEADER = [0x06, 0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01];
+const HID_REPORT_SIZE = 520;       // estándar SinoWealth (Hydra 10)
 
 // ════════════════════════════════════════════════════════════════════
 // LAYOUT — 104 keys full-size US ANSI
-// (x,y) en unidades (1u = 1 slot), w=ancho, h=alto.
-// Bounding box: 23 cols × 6 filas.
+// x,y en unidades (1u = 1 slot). Bounding box 23×6.
 // ════════════════════════════════════════════════════════════════════
-const KX500_KEYS = [
-    // Fila 0: Function row
-    { name: 'Esc', x: 0, y: 0, w: 1, h: 1 },
-    { name: 'F1', x: 2, y: 0, w: 1, h: 1 }, { name: 'F2', x: 3, y: 0, w: 1, h: 1 },
-    { name: 'F3', x: 4, y: 0, w: 1, h: 1 }, { name: 'F4', x: 5, y: 0, w: 1, h: 1 },
-    { name: 'F5', x: 6.5, y: 0, w: 1, h: 1 }, { name: 'F6', x: 7.5, y: 0, w: 1, h: 1 },
-    { name: 'F7', x: 8.5, y: 0, w: 1, h: 1 }, { name: 'F8', x: 9.5, y: 0, w: 1, h: 1 },
-    { name: 'F9', x: 11, y: 0, w: 1, h: 1 }, { name: 'F10', x: 12, y: 0, w: 1, h: 1 },
-    { name: 'F11', x: 13, y: 0, w: 1, h: 1 }, { name: 'F12', x: 14, y: 0, w: 1, h: 1 },
-    { name: 'Print Screen', x: 15.5, y: 0, w: 1, h: 1 },
-    { name: 'Scroll Lock', x: 16.5, y: 0, w: 1, h: 1 },
-    { name: 'Pause Break', x: 17.5, y: 0, w: 1, h: 1 },
-
-    // Fila 1: Number row + nav cluster
-    { name: '`', x: 0, y: 1, w: 1, h: 1 },
-    { name: '1', x: 1, y: 1, w: 1, h: 1 }, { name: '2', x: 2, y: 1, w: 1, h: 1 },
-    { name: '3', x: 3, y: 1, w: 1, h: 1 }, { name: '4', x: 4, y: 1, w: 1, h: 1 },
-    { name: '5', x: 5, y: 1, w: 1, h: 1 }, { name: '6', x: 6, y: 1, w: 1, h: 1 },
-    { name: '7', x: 7, y: 1, w: 1, h: 1 }, { name: '8', x: 8, y: 1, w: 1, h: 1 },
-    { name: '9', x: 9, y: 1, w: 1, h: 1 }, { name: '0', x: 10, y: 1, w: 1, h: 1 },
-    { name: '-', x: 11, y: 1, w: 1, h: 1 }, { name: '=', x: 12, y: 1, w: 1, h: 1 },
-    { name: 'Backspace', x: 13, y: 1, w: 2, h: 1 },
-    { name: 'Insert', x: 15.5, y: 1, w: 1, h: 1 },
-    { name: 'Home', x: 16.5, y: 1, w: 1, h: 1 },
-    { name: 'Page Up', x: 17.5, y: 1, w: 1, h: 1 },
-
+const KEYS = [
+    // Fila 0: function row
+    ['Esc', 0, 0], ['F1', 2, 0], ['F2', 3, 0], ['F3', 4, 0], ['F4', 5, 0],
+    ['F5', 6.5, 0], ['F6', 7.5, 0], ['F7', 8.5, 0], ['F8', 9.5, 0],
+    ['F9', 11, 0], ['F10', 12, 0], ['F11', 13, 0], ['F12', 14, 0],
+    ['Print Screen', 15.5, 0], ['Scroll Lock', 16.5, 0], ['Pause Break', 17.5, 0],
+    // Fila 1: number row + nav
+    ['`', 0, 1],
+    ['1', 1, 1], ['2', 2, 1], ['3', 3, 1], ['4', 4, 1], ['5', 5, 1],
+    ['6', 6, 1], ['7', 7, 1], ['8', 8, 1], ['9', 9, 1], ['0', 10, 1],
+    ['-', 11, 1], ['=', 12, 1], ['Backspace', 13, 1],
+    ['Insert', 15.5, 1], ['Home', 16.5, 1], ['Page Up', 17.5, 1],
     // Fila 2: QWERTY
-    { name: 'Tab', x: 0, y: 2, w: 1.5, h: 1 },
-    { name: 'Q', x: 1.5, y: 2, w: 1, h: 1 }, { name: 'W', x: 2.5, y: 2, w: 1, h: 1 },
-    { name: 'E', x: 3.5, y: 2, w: 1, h: 1 }, { name: 'R', x: 4.5, y: 2, w: 1, h: 1 },
-    { name: 'T', x: 5.5, y: 2, w: 1, h: 1 }, { name: 'Y', x: 6.5, y: 2, w: 1, h: 1 },
-    { name: 'U', x: 7.5, y: 2, w: 1, h: 1 }, { name: 'I', x: 8.5, y: 2, w: 1, h: 1 },
-    { name: 'O', x: 9.5, y: 2, w: 1, h: 1 }, { name: 'P', x: 10.5, y: 2, w: 1, h: 1 },
-    { name: '[', x: 11.5, y: 2, w: 1, h: 1 }, { name: ']', x: 12.5, y: 2, w: 1, h: 1 },
-    { name: '\\', x: 13.5, y: 2, w: 1.5, h: 1 },
-    { name: 'Del', x: 15.5, y: 2, w: 1, h: 1 },
-    { name: 'End', x: 16.5, y: 2, w: 1, h: 1 },
-    { name: 'Page Down', x: 17.5, y: 2, w: 1, h: 1 },
-
-    // Fila 3: Home row
-    { name: 'Caps Lock', x: 0, y: 3, w: 1.75, h: 1 },
-    { name: 'A', x: 1.75, y: 3, w: 1, h: 1 }, { name: 'S', x: 2.75, y: 3, w: 1, h: 1 },
-    { name: 'D', x: 3.75, y: 3, w: 1, h: 1 }, { name: 'F', x: 4.75, y: 3, w: 1, h: 1 },
-    { name: 'G', x: 5.75, y: 3, w: 1, h: 1 }, { name: 'H', x: 6.75, y: 3, w: 1, h: 1 },
-    { name: 'J', x: 7.75, y: 3, w: 1, h: 1 }, { name: 'K', x: 8.75, y: 3, w: 1, h: 1 },
-    { name: 'L', x: 9.75, y: 3, w: 1, h: 1 },
-    { name: ';', x: 10.75, y: 3, w: 1, h: 1 }, { name: '\u2019', x: 11.75, y: 3, w: 1, h: 1 },
-    { name: 'Enter', x: 12.75, y: 3, w: 2.25, h: 1 },
-
-    // Fila 4: Bottom row
-    { name: 'Left Shift', x: 0, y: 4, w: 2.25, h: 1 },
-    { name: 'Z', x: 2.25, y: 4, w: 1, h: 1 }, { name: 'X', x: 3.25, y: 4, w: 1, h: 1 },
-    { name: 'C', x: 4.25, y: 4, w: 1, h: 1 }, { name: 'V', x: 5.25, y: 4, w: 1, h: 1 },
-    { name: 'B', x: 6.25, y: 4, w: 1, h: 1 }, { name: 'N', x: 7.25, y: 4, w: 1, h: 1 },
-    { name: 'M', x: 8.25, y: 4, w: 1, h: 1 },
-    { name: ',', x: 9.25, y: 4, w: 1, h: 1 }, { name: '.', x: 10.25, y: 4, w: 1, h: 1 },
-    { name: '/', x: 11.25, y: 4, w: 1, h: 1 },
-    { name: 'Right Shift', x: 12.25, y: 4, w: 2.75, h: 1 },
-    { name: 'Up Arrow', x: 16.5, y: 4, w: 1, h: 1 },
-
-    // Fila 5: Space row
-    { name: 'Left Ctrl', x: 0, y: 5, w: 1.25, h: 1 },
-    { name: 'Left Win', x: 1.25, y: 5, w: 1.25, h: 1 },
-    { name: 'Left Alt', x: 2.5, y: 5, w: 1.25, h: 1 },
-    { name: 'Space', x: 3.75, y: 5, w: 6.25, h: 1 },
-    { name: 'Right Alt', x: 10, y: 5, w: 1.25, h: 1 },
-    { name: 'Fn', x: 11.25, y: 5, w: 1.25, h: 1 },
-    { name: 'Menu', x: 12.5, y: 5, w: 1.25, h: 1 },
-    { name: 'Right Ctrl', x: 13.75, y: 5, w: 1.25, h: 1 },
-    { name: 'Left Arrow', x: 15.5, y: 5, w: 1, h: 1 },
-    { name: 'Down Arrow', x: 16.5, y: 5, w: 1, h: 1 },
-    { name: 'Right Arrow', x: 17.5, y: 5, w: 1, h: 1 },
-
+    ['Tab', 0, 2],
+    ['Q', 1.5, 2], ['W', 2.5, 2], ['E', 3.5, 2], ['R', 4.5, 2],
+    ['T', 5.5, 2], ['Y', 6.5, 2], ['U', 7.5, 2], ['I', 8.5, 2],
+    ['O', 9.5, 2], ['P', 10.5, 2],
+    ['[', 11.5, 2], [']', 12.5, 2], ['\\', 13.5, 2],
+    ['Del', 15.5, 2], ['End', 16.5, 2], ['Page Down', 17.5, 2],
+    // Fila 3: home row
+    ['Caps Lock', 0, 3],
+    ['A', 1.75, 3], ['S', 2.75, 3], ['D', 3.75, 3], ['F', 4.75, 3],
+    ['G', 5.75, 3], ['H', 6.75, 3], ['J', 7.75, 3], ['K', 8.75, 3], ['L', 9.75, 3],
+    [';', 10.75, 3], ['\u2019', 11.75, 3], ['Enter', 12.75, 3],
+    // Fila 4: bottom row
+    ['Left Shift', 0, 4],
+    ['Z', 2.25, 4], ['X', 3.25, 4], ['C', 4.25, 4], ['V', 5.25, 4],
+    ['B', 6.25, 4], ['N', 7.25, 4], ['M', 8.25, 4],
+    [',', 9.25, 4], ['.', 10.25, 4], ['/', 11.25, 4],
+    ['Right Shift', 12.25, 4], ['Up Arrow', 16.5, 4],
+    // Fila 5: space row
+    ['Left Ctrl', 0, 5], ['Left Win', 1.25, 5], ['Left Alt', 2.5, 5],
+    ['Space', 3.75, 5],
+    ['Right Alt', 10, 5], ['Fn', 11.25, 5], ['Menu', 12.5, 5], ['Right Ctrl', 13.75, 5],
+    ['Left Arrow', 15.5, 5], ['Down Arrow', 16.5, 5], ['Right Arrow', 17.5, 5],
     // Numpad
-    { name: 'NumLock', x: 19, y: 1, w: 1, h: 1 },
-    { name: 'Num /', x: 20, y: 1, w: 1, h: 1 },
-    { name: 'Num *', x: 21, y: 1, w: 1, h: 1 },
-    { name: 'Num -', x: 22, y: 1, w: 1, h: 1 },
-    { name: 'Num 7', x: 19, y: 2, w: 1, h: 1 },
-    { name: 'Num 8', x: 20, y: 2, w: 1, h: 1 },
-    { name: 'Num 9', x: 21, y: 2, w: 1, h: 1 },
-    { name: 'Num +', x: 22, y: 2, w: 1, h: 2 },
-    { name: 'Num 4', x: 19, y: 3, w: 1, h: 1 },
-    { name: 'Num 5', x: 20, y: 3, w: 1, h: 1 },
-    { name: 'Num 6', x: 21, y: 3, w: 1, h: 1 },
-    { name: 'Num 1', x: 19, y: 4, w: 1, h: 1 },
-    { name: 'Num 2', x: 20, y: 4, w: 1, h: 1 },
-    { name: 'Num 3', x: 21, y: 4, w: 1, h: 1 },
-    { name: 'Num Enter', x: 22, y: 4, w: 1, h: 2 },
-    { name: 'Num 0', x: 19, y: 5, w: 2, h: 1 },
-    { name: 'Num .', x: 21, y: 5, w: 1, h: 1 },
+    ['NumLock', 19, 1], ['Num /', 20, 1], ['Num *', 21, 1], ['Num -', 22, 1],
+    ['Num 7', 19, 2], ['Num 8', 20, 2], ['Num 9', 21, 2], ['Num +', 22, 2],
+    ['Num 4', 19, 3], ['Num 5', 20, 3], ['Num 6', 21, 3],
+    ['Num 1', 19, 4], ['Num 2', 20, 4], ['Num 3', 21, 4], ['Num Enter', 22, 4],
+    ['Num 0', 19, 5], ['Num .', 21, 5],
 ];
 
-// Calcular bounding box para Size()
-const LAYOUT_SIZE = (function () {
-    let maxX = 0, maxY = 0;
-    for (const k of KX500_KEYS) {
-        if (k.x + k.w > maxX) maxX = k.x + k.w;
-        if (k.y + k.h > maxY) maxY = k.y + k.h;
-    }
-    return [Math.ceil(maxX), Math.ceil(maxY)];
+// Bounding box para Size() — recalculado del array KEYS
+const LAYOUT_W = (function () {
+    let m = 0;
+    for (const k of KEYS) if (k[1] > m) m = k[1];
+    return Math.ceil(m) + 1;
+})();
+const LAYOUT_H = (function () {
+    let m = 0;
+    for (const k of KEYS) if (k[2] > m) m = k[2];
+    return Math.ceil(m) + 1;
 })();
 
 // ════════════════════════════════════════════════════════════════════
-// PROTOCOLO BEST-EFFORT (SinoWealth-style)
-//
-// Patrón más común en teclados RGB HID Vendor Defined.
-// HidServ.dll del KX-500 usa HidD_SetFeature/GetFeature (confirmado en RE).
-//
-// Si no funciona con el KX-500 real: calibrar con USBPcap+Wireshark
-// editando PROTOCOL_HEADER o el report size.
-// ════════════════════════════════════════════════════════════════════
-const PROTOCOL_HEADER = [0x06, 0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01];
-const PROTOCOL_MODE = "sinowealth"; // etiqueta informativa
-
-function buildFrame(leds) {
-    const packet = PROTOCOL_HEADER.slice();
-    for (const led of leds) {
-        packet.push(led.r & 0xFF);
-        packet.push(led.g & 0xFF);
-        packet.push(led.b & 0xFF);
-    }
-    while (packet.length < HID_REPORT_SIZE) packet.push(0x00);
-    return packet;
-}
-
-// ════════════════════════════════════════════════════════════════════
-// EFFECTS — Override de canvas si el usuario quiere efectos propios
-// (en modo Canvas, SignalRGB ya aplica effects — solo usamos este
-// override cuando el usuario fuerza "LightingMode: Forced" o el
-// effect "typing")
-// ════════════════════════════════════════════════════════════════════
-function hsvToRgb(h, s, v) {
-    let r, g, b;
-    const i = Math.floor(h * 6);
-    const f = h * 6 - i;
-    const p = v * (1 - s);
-    const q = v * (1 - f * s);
-    const t = v * (1 - (1 - f) * s);
-    switch (i % 6) {
-        case 0: r = v; g = t; b = p; break;
-        case 1: r = q; g = v; b = p; break;
-        case 2: r = p; g = v; b = t; break;
-        case 3: r = p; g = q; b = v; break;
-        case 4: r = t; g = p; b = v; break;
-        case 5: r = v; g = p; b = q; break;
-    }
-    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-}
-
-function applyForcedEffect(ledsArr, time, color, effectId) {
-    const [r, g, b] = color || [255, 0, 0];
-    switch (effectId) {
-        case 'breathing': {
-            const phase = Math.sin(time * 2 * Math.PI * 0.5);
-            const factor = 0.3 + 0.7 * (phase * 0.5 + 0.5);
-            for (const led of ledsArr) {
-                led.r = Math.round(r * factor);
-                led.g = Math.round(g * factor);
-                led.b = Math.round(b * factor);
-            }
-            break;
-        }
-        case 'wave': {
-            const baseX = time * 5;
-            for (const led of ledsArr) {
-                const dist = Math.abs(led.x - baseX);
-                const t = Math.max(0, 1 - dist / 5);
-                const [wr, wg, wb] = hsvToRgb((0.5 + led.x * 0.02) % 1, 1, t);
-                led.r = wr; led.g = wg; led.b = wb;
-            }
-            break;
-        }
-        case 'typing': {
-            const pulse = (Math.sin(time * 4) + 1) * 0.5;
-            for (const led of ledsArr) {
-                const dist = Math.sqrt(Math.pow(led.x - 9, 2) + Math.pow(led.y - 2.5, 2));
-                const t = Math.max(0, 1 - dist / 8) * (0.3 + pulse * 0.7);
-                led.r = Math.round(255 * t);
-                led.g = Math.round(100 * t);
-                led.b = Math.round(200 * t);
-            }
-            break;
-        }
-        default: {
-            // 'static' y fallback — color sólido
-            for (const led of ledsArr) { led.r = r; led.g = g; led.b = b; }
-        }
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// FRAMEBUFFER INTERNO
-// SignalRGB llama a Render() cada ~30ms; nosotros consultamos
-// device.color(x,y) por key (modo Canvas) o usamos forcedColor (Forced).
-// ════════════════════════════════════════════════════════════════════
-let ledBuffer = [];
-let lastRenderTime = 0;
-
-// ════════════════════════════════════════════════════════════════════
-// SIGNALRGB SDK EXPORTS
+// SignalRGB SDK — exports obligatorios
 // ════════════════════════════════════════════════════════════════════
 
 /* global
@@ -256,97 +101,61 @@ LightingMode:readonly
 forcedColor:readonly
 */
 
-export function Name() { return DEVICE_NAME; }
+export function Name() {
+    return "Checkpoint KX-500 (NA-KB-1001)";
+}
 
-export function Publisher() { return AUTHOR; }
+export function Publisher() {
+    return "RedFenix Estudio";
+}
 
-export function VendorId() { return KX500_VID; }
+export function VendorId() {
+    return VID;
+}
 
-/**
- * ProductId como ARRAY (no single value).
- * Esto es crítico — SignalRGB valida con Array.includes() internamente.
- * Verificado contra Redragon K626 plugin (mismo formato).
- */
-export function ProductId() { return [KX500_PID]; }
+// ProductId debe ser array (no single value)
+export function ProductId() {
+    return [PID];
+}
 
-export function Type() { return "hid"; }
+export function Type() {
+    return "hid";
+}
 
-export function DeviceType() { return "keyboard"; }
+export function DeviceType() {
+    return "keyboard";
+}
 
-export function Size() { return LAYOUT_SIZE; }
+export function Size() {
+    return [LAYOUT_W, LAYOUT_H];
+}
 
 export function LedNames() {
-    return KX500_KEYS.map(k => k.name);
+    return KEYS.map(k => k[0]);
 }
 
 export function LedPositions() {
-    return KX500_KEYS.map(k => [k.x, k.y]);
+    return KEYS.map(k => [k[1], k[2]]);
 }
 
 export function Documentation() {
-    return DOCUMENTATION_URL;
+    return "https://github.com/RedFenix-Estudio/KX-500-Plugin";
 }
 
 export function ImageUrl() {
-    // SignalRGB carga la imagen via HTTP, así que necesita raw.githubusercontent.com
     return "https://raw.githubusercontent.com/RedFenix-Estudio/KX-500-Plugin/main/assets/KX-500.png";
 }
 
-/**
- * Valida qué endpoints HID abrir.
- * El KX-500 expone 5 colecciones HID (ver PROTOCOL.md):
- *
- *   MI_00          UP=0x0001  U=0x0006  Keyboard (BIOS)
- *   MI_01 Col01    UP=0x0001  U=0x0006  Keyboard (NKRO)
- *   MI_01 Col02    UP=0x0001  U=0x000C  Wireless Radio Controls
- *   MI_01 Col03    UP=0x000C  U=0x0001  Consumer Control
- *   MI_01 Col04    UP=0xFF1C  U=0x0092  Vendor Defined (RGB) ← NOSOTROS
- *
- * Filtro triple: interface + usage_page + usage.
- * Si SignalRGB no matchea con usage_page/usage, el plugin no carga.
- */
+// Filtra el endpoint HID del RGB (MI_01 Col04, Usage Page 0xFF1C)
 export function Validate(endpoint) {
     return endpoint.interface === 1
-        && endpoint.usage_page === USAGE_PAGE_RGB
-        && endpoint.usage === USAGE_RGB;
+        && endpoint.usage_page === RGB_USAGE_PAGE
+        && endpoint.usage === RGB_USAGE;
 }
 
-/**
- * Settings UI que el usuario puede tocar desde SignalRGB.
- *  - effect:          qué effect correr (static/breathing/wave/typing)
- *  - effectColor:     color base del effect
- *  - brightness:      multiplicador global (0..100%)
- *  - LightingMode:    Canvas (SignalRGB controla) o Forced (color fijo)
- *  - forcedColor:     color fijo cuando LightingMode=Forced
- *  - shutdownColor:   color al apagar SignalRGB
- */
+// Settings UI (estos globals los inyecta SignalRGB en runtime)
 export function ControllableParameters() {
     return [
-        {
-            property: "effect",
-            group: "lighting",
-            label: "Effect",
-            description: "Internal effect applied when LightingMode is Forced.",
-            type: "combobox",
-            values: ["static", "breathing", "wave", "typing"],
-            default: "static",
-        },
-        {
-            property: "effectColor",
-            group: "lighting",
-            label: "Effect Color",
-            type: "color",
-            default: "#009bde",
-        },
-        {
-            property: "brightness",
-            group: "lighting",
-            label: "Brightness",
-            type: "number",
-            min: "0",
-            max: "100",
-            default: "100",
-        },
         {
             property: "shutdownColor",
             group: "lighting",
@@ -372,153 +181,86 @@ export function ControllableParameters() {
     ];
 }
 
-/**
- * Procesos que NO deben estar corriendo cuando el plugin controla el teclado.
- * El driver oficial monopoliza el HID RGB.
- */
+// Procesos que monopolizan el HID RGB — SignalRGB espera que se cierren
 export function ConflictingProcesses() {
     return ["Mechanical Keyboard.exe", "HidServ.exe"];
 }
 
-/**
- * Inicialización.
- *
- * Crítico (v2 fix): SignalRGB requiere que llamemos
- *   - device.setName(name)
- *   - device.setSize([w, h])
- *   - device.setControllableLeds(names, positions)
- * dentro de Initialize() para que registre el dispositivo en su UI.
- * Sin esto, el device aparece pero no se puede usar.
- */
+// ════════════════════════════════════════════════════════════════════
+// Lifecycle
+// ════════════════════════════════════════════════════════════════════
+
+// Llamado una vez por SignalRGB al activar el plugin
 export function Initialize() {
-    ledBuffer = KX500_KEYS.map(k => ({
-        r: 0, g: 0, b: 0,
-        name: k.name,
-        x: k.x, y: k.y, w: k.w, h: k.h,
-    }));
-    lastRenderTime = Date.now();
-
-    try {
-        device.setName(DEVICE_NAME);
-        device.setSize(LAYOUT_SIZE);
-        device.setControllableLeds(
-            KX500_KEYS.map(k => k.name),
-            KX500_KEYS.map(k => [k.x, k.y]),
-        );
-        device.log(`[KX500] Registered: ${DEVICE_NAME} (${KX500_KEYS.length} keys, ${LAYOUT_SIZE[0]}×${LAYOUT_SIZE[1]})`);
-    } catch (err) {
-        device.notify("KX-500 init error", err.message, 1);
-        device.log(`[KX500] setName/setSize/setControllableLeds failed: ${err.message}`);
-    }
-
-    // Probe inicial: enviar un clear packet para verificar que el canal HID responde
-    try {
-        const clearPacket = buildFrame(ledBuffer);
-        device.send_report(clearPacket, clearPacket.length);
-        device.pause(1);
-        device.log(`[KX500] Protocol probe OK (${PROTOCOL_MODE}, ${HID_REPORT_SIZE}B)`);
-    } catch (err) {
-        device.notify("KX-500 probe failed", err.message, 0);
-        device.log(`[KX500] Protocol probe failed: ${err.message} — plugin will load anyway`);
-    }
-
-    device.log(`[KX500] Author: ${AUTHOR} (${AUTHOR_GITHUB_URL})`);
-    device.log(`[KX500] Docs: ${DOCUMENTATION_URL}`);
+    device.setName("Checkpoint KX-500 (NA-KB-1001)");
+    device.setSize([LAYOUT_W, LAYOUT_H]);
+    device.setControllableLeds(
+        KEYS.map(k => k[0]),
+        KEYS.map(k => [k[1], k[2]]),
+    );
+    device.log("[KX500] Initialized: " + KEYS.length + " keys, " + LAYOUT_W + "x" + LAYOUT_H);
 }
 
-/**
- * Render loop — llamado cada ~30ms por SignalRGB.
- *
- * Estrategia:
- *   - LightingMode=Canvas: leemos device.color(x,y) por key desde el canvas
- *   - LightingMode=Forced: aplicamos effect interno sobre el forcedColor
- *
- * En ambos casos, enviamos el resultado al teclado via device.send_report()
- * con device.pause(1) para no saturar el MCU.
- */
+// Llamado cada ~30ms por SignalRGB — el corazón del plugin
 export function Render() {
-    if (!ledBuffer.length) return;
-
-    const now = Date.now();
-    lastRenderTime = now;
-    const time = now / 1000;
-
-    let useColor = null;
+    // Decidir color base según LightingMode
+    let r = 0, g = 0, b = 0;
     if (typeof LightingMode !== "undefined" && LightingMode === "Forced") {
-        useColor = hexToRgb(forcedColor || "#009bde");
-    }
-
-    if (useColor) {
-        // Modo Forced — usar effect interno
-        const effect = (typeof effect !== "undefined" && effect) ? effect : "static";
-        applyForcedEffect(ledBuffer, time, useColor, effect);
-    } else {
-        // Modo Canvas — leer device.color(x,y) por key (estilo SignalRGB estándar)
-        for (let i = 0; i < ledBuffer.length; i++) {
-            const led = ledBuffer[i];
-            const c = device.color(led.x, led.y);
-            led.r = c[0];
-            led.g = c[1];
-            led.b = c[2];
+        // Modo Forced: usar forcedColor (hex string)
+        const hex = (typeof forcedColor !== "undefined") ? forcedColor : "#009bde";
+        const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        if (m) {
+            r = parseInt(m[1], 16);
+            g = parseInt(m[2], 16);
+            b = parseInt(m[3], 16);
         }
     }
 
-    // Aplicar brightness
-    const bright = (typeof brightness !== "undefined" ? brightness : 100) / 100;
-    if (bright < 1.0) {
-        for (const led of ledBuffer) {
-            led.r = Math.round(led.r * bright);
-            led.g = Math.round(led.g * bright);
-            led.b = Math.round(led.b * bright);
+    // Construir packet HID: header + RGB por key
+    const packet = HID_HEADER.slice();
+    for (let i = 0; i < KEYS.length; i++) {
+        let cr, cg, cb;
+        if (LightingMode === "Forced") {
+            cr = r; cg = g; cb = b;
+        } else {
+            // Modo Canvas: leer color del canvas en la posición de la key
+            const key = KEYS[i];
+            const c = device.color(key[1], key[2]);
+            cr = c[0]; cg = c[1]; cb = c[2];
         }
+        packet.push(cr & 0xFF, cg & 0xFF, cb & 0xFF);
     }
 
-    // Construir y enviar packet HID
+    // Pad a HID_REPORT_SIZE
+    while (packet.length < HID_REPORT_SIZE) packet.push(0x00);
+
+    // Enviar al teclado
     try {
-        const packet = buildFrame(ledBuffer);
         device.send_report(packet, packet.length);
-        // Pausa entre reportes — sin esto, el firmware puede ignorar frames
         device.pause(1);
     } catch (err) {
-        // Silenciar — SignalRGB puede desconectar device intermitentemente
+        // Silenciar — SignalRGB puede desconectar el device intermitentemente
     }
 }
 
-/**
- * Shutdown — llamado cuando SignalRGB se apaga o se desactiva el plugin.
- */
+// Llamado al apagar / suspender
 export function Shutdown(SystemSuspending) {
-    const color = SystemSuspending
+    const hex = SystemSuspending
         ? "#000000"
         : (typeof shutdownColor !== "undefined" ? shutdownColor : "#000000");
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    const r = m ? parseInt(m[1], 16) : 0;
+    const g = m ? parseInt(m[2], 16) : 0;
+    const b = m ? parseInt(m[3], 16) : 0;
+
+    const packet = HID_HEADER.slice();
+    for (let i = 0; i < KEYS.length; i++) {
+        packet.push(r, g, b);
+    }
+    while (packet.length < HID_REPORT_SIZE) packet.push(0x00);
 
     try {
-        for (const led of ledBuffer) {
-            led.r = 0; led.g = 0; led.b = 0;
-        }
-        const packet = buildFrame(ledBuffer);
         device.send_report(packet, packet.length);
         device.pause(1);
-        device.log(`[KX500] Shutdown: ${color}`);
-    } catch (err) {
-        device.log(`[KX500] Shutdown error: ${err.message}`);
-    }
+    } catch (err) {}
 }
-
-// ════════════════════════════════════════════════════════════════════
-// HELPERS
-// ════════════════════════════════════════════════════════════════════
-function hexToRgb(hex) {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
-    if (!result) return [0, 0, 0];
-    return [
-        parseInt(result[1], 16),
-        parseInt(result[2], 16),
-        parseInt(result[3], 16),
-    ];
-}
-
-// ════════════════════════════════════════════════════════════════════
-// EXPORTS INTERNOS (para tests offline; SignalRGB los ignora)
-// ════════════════════════════════════════════════════════════════════
-export { KX500_KEYS, LAYOUT_SIZE, PROTOCOL_MODE, PROTOCOL_HEADER, HID_REPORT_SIZE };
