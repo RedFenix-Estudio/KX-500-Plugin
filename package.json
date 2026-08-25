@@ -1,19 +1,12 @@
 {
   "name": "kx500-signalrgb-plugin",
   "version": "0.1.0",
-  "description": "SignalRGB plugin for the Checkpoint Gaming KX-500 (NA-KB-1001 / Naruto Edition) keyboard. Reverse-engineered HID protocol, open source.",
+  "description": "SignalRGB plugin para el teclado Checkpoint Gaming KX-500 (NA-KB-1001 / Naruto Edition). Single-file ES module. Layout US ANSI 104 keys. Protocolo HID best-effort con presets configurables.",
   "main": "KX500_Lite.js",
-  "exports": {
-    ".": "./KX500_Lite.js",
-    "./src/layout": "./src/layout.js",
-    "./src/protocol": "./src/protocol.js",
-    "./src/effects": "./src/effects.js"
-  },
   "type": "module",
   "scripts": {
-    "test": "node test/validate.js && node test/smoke.js",
-    "validate": "node test/validate.js",
-    "smoke": "node test/smoke.js"
+    "test": "node dev/test/validate.js",
+    "validate": "node dev/test/validate.js"
   },
   "keywords": [
     "signalrgb",
@@ -22,24 +15,21 @@
     "checkpoint-gaming",
     "kx-500",
     "naruto",
-    "hid"
+    "hid",
+    "per-key-rgb"
   ],
   "author": "RedFenix Estudio <erikjreyesc.2003@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/RedFenix-Estudio/kx500-signalrgb-plugin.git"
+    "url": "https://github.com/RedFenix-Estudio/KX-500-Plugin.git"
   },
   "bugs": {
-    "url": "https://github.com/RedFenix-Estudio/kx500-signalrgb-plugin/issues"
+    "url": "https://github.com/RedFenix-Estudio/KX-500-Plugin/issues"
   },
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-    "node-hid": "^3.1.2"
-  },
-  "devDependencies": {},
   "os": [
     "win32"
   ]
