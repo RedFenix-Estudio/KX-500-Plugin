@@ -1,19 +1,18 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Plugin — Lite v0.7.0 (REWRITE)                ║
+ * ║  KX-500 SignalRGB Plugin — Lite v0.7.1                          ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v0.7.0 (2026-08-26) — REWRITE COMPLETO basado en plugin       ║
- * ║    Sinowealth oficial de SignalRGB (encontrado en plugin_cdn). ║
+ * ║  v0.7.1 (2026-08-26) — USAR device.write() NO send_report     ║
  * ║                                                                  ║
- * ║  CAMBIOS CRITICOS vs v0.6.1:                                    ║
- * ║    - device.write() → device.send_report()  ← ESTO ERA EL BUG ║
- * ║    - Tamaño: 64B → 520B por paquete                              ║
- * ║    - Header: 04 [SEQ] [CMD] → 04 08 00 00 01 00 7A 01 (estilo Sinowealth) ║
- * ║    - Per-key RGB completo (3 bytes por LED, 104 LEDs)            ║
+ * ║  Bug encontrado: KX-500 HID endpoint NO soporta Feature Reports. ║
+ * ║  Error: HidD_SetFeature: ERROR_INVALID_FUNCTION                 ║
  * ║                                                                  ║
- * ║  Referencia: SignalRgb\cache\plugin_cdn\main\Plugins\          ║
- * ║              Sinowealth\Sinowealth_Keyboard_Controller.js     ║
+ * ║  Por eso send_report (Feature Report) falla.                     ║
+ * ║  Hay que usar write() que es HID Output Report via WriteFile.    ║
+ * ║                                                                  ║
+ * ║  También reduje a UN SOLO write por frame (antes 7 writes,      ║
+ * ║  el driver HID no aguantaba el thrash).                         ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
@@ -23,28 +22,26 @@
 // METADATA
 // ════════════════════════════════════════════════════════════════════
 const AUTHOR = "RedFenix Estudio";
-const AUTHOR_GITHUB_URL = "https://github.com/RedFenix-Estudio";
 const DOCUMENTATION_URL = "https://github.com/RedFenix-Estudio/KX-500-Plugin";
 const DEVICE_NAME = "Checkpoint KX-500 (NA-KB-1001)";
 
 // ════════════════════════════════════════════════════════════════════
-// HID — VID/PID + protocolo Sinowealth-compatible
+// HID — VID/PID + protocolo Sinowealth-style (Output Report)
 // ════════════════════════════════════════════════════════════════════
 const KX500_VID = 0x320F;
 const KX500_PID = 0x5008;
-const HID_REPORT_ID = 0x04;          // HID Report ID del KX-500 (USBPcap-verified)
-const PACKET_SIZE = 520;              // Tamaño fijo del paquete (como Sinowealth)
+const HID_REPORT_ID = 0x04;       // HID Report ID del KX-500 (USBPcap-verified)
+const PACKET_SIZE = 520;           // Tamaño fijo del paquete
 
-// Header Sinowealth (8 bytes) — primer byte es el Report ID HID
-// Bytes 1-7 son parte del protocolo y se mantienen constantes
+// Header Sinowealth — primer byte es el HID Report ID
+// KX-500 usa 0x04 en lugar de 0x06 (Sinowealth original)
 const SINOWEALTH_HEADER = [
-    0x04,  // HID Report ID (KX-500 usa 0x04, Sinowealth original usa 0x06)
-    0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01  // Resto del header
+    0x04,                    // HID Report ID (KX-500)
+    0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01   // Protocolo header
 ];
 
 // ════════════════════════════════════════════════════════════════════
 // LAYOUT — 104 keys full-size US ANSI
-// vLedNames, vLeds (índices packed), vLedPositions
 // ════════════════════════════════════════════════════════════════════
 const vLedNames = [
     // Fila 0: F-row (16 keys)
@@ -71,7 +68,6 @@ const vLedNames = [
     "Num 0", "Num ."
 ];
 
-// vLedPositions: [x, y] para cada LED (en unidades 1u)
 const vLedPositions = [
     [0, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6.5, 0], [7.5, 0], [8.5, 0], [9.5, 0], [11, 0], [12, 0], [13, 0], [14, 0],
     [15.5, 0], [16.5, 0], [17.5, 0],
@@ -89,9 +85,6 @@ const vLedPositions = [
     [19, 5], [21, 5]
 ];
 
-// vLeds: índices packed en el RGBData
-// Por defecto 0,1,2,...,N-1 (orden secuencial).
-// Si el firmware del KX-500 espera otro orden, ajustar aquí.
 const vLeds = (function() {
     const arr = new Array(vLedNames.length);
     for (let i = 0; i < vLedNames.length; i++) arr[i] = i;
@@ -108,7 +101,7 @@ const LAYOUT_SIZE = (function () {
 })();
 
 // ════════════════════════════════════════════════════════════════════
-// SEND COLOR (basado en Sinowealth_Keyboard_Controller.js)
+// SEND COLORS — UN solo write() por frame
 // ════════════════════════════════════════════════════════════════════
 function hexToRgb(hex) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
@@ -134,7 +127,7 @@ function sendColors(overrideColor) {
         } else if (LightingMode === "Forced") {
             color = hexToRgb(forcedColor || "#009bde");
         } else {
-            // Canvas mode: leer color del canvas de SignalRGB
+            // Canvas mode
             try {
                 color = device.color(pos[0], pos[1]);
             } catch (err) {
@@ -147,14 +140,14 @@ function sendColors(overrideColor) {
         RGBData[idx + 2] = color[2];
     }
 
-    // Construir packet: header Sinowealth + RGBData + padding a 520
+    // Construir packet: header + RGBData + padding
     const packet = SINOWEALTH_HEADER.concat(RGBData);
     while (packet.length < PACKET_SIZE) packet.push(0x00);
     const finalPacket = packet.slice(0, PACKET_SIZE);
 
-    // Enviar via send_report (ESTO ES LO QUE CAMBIA vs v0.6.1)
+    // UN SOLO write por frame (NO send_report porque KX-500 no soporta Feature Reports)
     try {
-        device.send_report(finalPacket, PACKET_SIZE);
+        device.write(finalPacket, PACKET_SIZE);
         device.pause(1);
     } catch (err) {
         // Silenciar
@@ -185,10 +178,6 @@ export function ImageUrl() {
     return "https://raw.githubusercontent.com/RedFenix-Estudio/KX-500-Plugin/main/assets/KX-500.png";
 }
 
-/**
- * Validate() — matchear el canal Vendor Defined RGB (FF1C:0092).
- * Confirmado con logs de SignalRGB: el RGB está en collection 0x0004.
- */
 export function Validate(endpoint) {
     if (endpoint.usage_page === 0xFF1C && endpoint.usage === 0x0092) {
         return true;
@@ -205,7 +194,6 @@ export function ControllableParameters() {
             property: "shutdownColor",
             group: "lighting",
             label: "Shutdown Color",
-            description: "This color is applied when SignalRGB is shutting down",
             type: "color",
             default: "#000000",
         },
@@ -213,7 +201,6 @@ export function ControllableParameters() {
             property: "LightingMode",
             group: "lighting",
             label: "Lighting Mode",
-            description: "Canvas = SignalRGB effect, Forced = solid color",
             type: "combobox",
             values: ["Canvas", "Forced"],
             default: "Canvas",
@@ -222,7 +209,6 @@ export function ControllableParameters() {
             property: "forcedColor",
             group: "lighting",
             label: "Forced Color",
-            description: "Used when LightingMode = Forced",
             type: "color",
             default: "#009bde",
         },
@@ -239,7 +225,7 @@ export function Initialize() {
         device.setSize(LAYOUT_SIZE);
         device.setControllableLeds(vLedNames.slice(), vLedPositions.map(p => p.slice()));
         device.log(`[KX500] Registered: ${DEVICE_NAME} (${vLedNames.length} keys, ${LAYOUT_SIZE[0]}×${LAYOUT_SIZE[1]})`);
-        device.log(`[KX500] Protocol: Sinowealth-compatible (send_report, 520B)`);
+        device.log(`[KX500] Protocol: HID Output Report, 520B, Report ID 0x04`);
     } catch (err) {
         device.notify("KX-500 init error", err.message, 1);
         device.log(`[KX500] init failed: ${err.message}`);
@@ -255,7 +241,6 @@ export function Shutdown(SystemSuspending) {
     sendColors(color);
 }
 
-// Exports internos para tests
 export {
     vLedNames,
     vLeds,
