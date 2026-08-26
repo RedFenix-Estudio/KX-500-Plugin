@@ -1,29 +1,19 @@
 /**
- * KX-500 Effects — Lite set
- * ─────────────────────────────────────────────────────────────────
- * Effects que el plugin KX-500 Lite expone a SignalRGB.
+ * KX-500 Effects — internal effects for LightingMode=Forced
  *
- * Cada effect recibe el array `leds` (key-by-key con {r,g,b,name,x,y}) y
- * debe mutar los RGB in-place. El Render loop de SignalRGB se encarga de
- * llamar a cada effect en secuencia (si hubiera chaining).
- *
- * Incluidos:
- *   - static:       un color sólido para todas las keys
- *   - breathing:    pulsado lento de un color
- *   - wave:         ola horizontal de color (basado en tiempo + posición)
- *   - reactive:     audio-reactive (basado en Sinowealth/HyperX pattern)
- *   - typing:       efecto basado en typing speed (placeholder — el KX-500
- *                   detecta WPM pero no lo exponemos vía plugin hasta tener
- *                   el canal IN confirmado)
- *
- * El set es mínimo pero funcional. Effects más complejos (rainbow spiral,
- * ripple, audio spectrum) los podemos agregar cuando el RE esté cerrado.
+ * Implementa los effects que SignalRGB puede aplicar sobre el forcedColor
+ * cuando el usuario está en modo Forced. En modo Canvas, SignalRGB maneja
+ * los effects directamente y estos no se usan.
  */
 
 'use strict';
 
-// HSV → RGB helper
-function hsvToRgb(h, s, v) {
+import { KX500_KEYS } from './layout.js';
+
+/**
+ * HSV → RGB conversion (h, s, v ∈ [0, 1])
+ */
+export function hsvToRgb(h, s, v) {
     let r, g, b;
     const i = Math.floor(h * 6);
     const f = h * 6 - i;
@@ -38,18 +28,15 @@ function hsvToRgb(h, s, v) {
         case 4: r = t; g = p; b = v; break;
         case 5: r = v; g = p; b = q; break;
     }
-    return [
-        Math.round(r * 255),
-        Math.round(g * 255),
-        Math.round(b * 255),
-    ];
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
 /**
- * Helper: aplica un color sólido a todas las keys.
+ * Effect: static (color sólido)
  */
-function applySolidColor(leds, r, g, b) {
-    for (const led of leds) {
+export function staticEffect(ledsArr, _time, color) {
+    const [r, g, b] = color;
+    for (const led of ledsArr) {
         led.r = r;
         led.g = g;
         led.b = b;
@@ -57,93 +44,42 @@ function applySolidColor(leds, r, g, b) {
 }
 
 /**
- * Effect: Static
- * Pinta todas las keys del color configurado.
- * @param {Array} leds
- * @param {object} ctx - { color: [r,g,b] }
+ * Effect: breathing (sube y baja el brightness con sine)
  */
-function effectStatic(leds, ctx) {
-    const [r, g, b] = ctx.color || [255, 0, 0];
-    applySolidColor(leds, r, g, b);
+export function breathingEffect(ledsArr, time, color) {
+    const [r, g, b] = color;
+    const phase = Math.sin(time * 2 * Math.PI * 0.5); // 0.5 Hz = 2s por ciclo
+    const factor = 0.3 + 0.7 * (phase * 0.5 + 0.5);   // 0.3..1.0
+    for (const led of ledsArr) {
+        led.r = Math.round(r * factor);
+        led.g = Math.round(g * factor);
+        led.b = Math.round(b * factor);
+    }
 }
 
 /**
- * Effect: Breathing
- * Pulsado lento del color (sin/cos wave).
- * @param {Array} leds
- * @param {object} ctx - { color: [r,g,b], speed: 1.0 }
+ * Effect: wave (ola horizontal multicolor)
  */
-function effectBreathing(leds, ctx) {
-    const [r, g, b] = ctx.color || [255, 0, 0];
-    const speed = ctx.speed || 1.0;
-    const phase = Math.sin(ctx.time * speed * 2 * Math.PI * 0.5); // 1 ciclo cada 2 segundos
-    const factor = 0.3 + 0.7 * (phase * 0.5 + 0.5); // 0.3..1.0
-    applySolidColor(leds,
-        Math.round(r * factor),
-        Math.round(g * factor),
-        Math.round(b * factor),
-    );
-}
-
-/**
- * Effect: Wave
- * Ola de color que viaja horizontalmente.
- * @param {Array} leds
- * @param {object} ctx - { speed: 1.0, hue: 0.5, width: 0.3 }
- */
-function effectWave(leds, ctx) {
-    const speed = ctx.speed || 1.0;
-    const hue = ctx.hue || 0.5;
-    const width = ctx.width || 0.3;
-    const baseX = ctx.time * speed * 0.5; // velocidad de la ola (unidades/segundo)
-
-    for (const led of leds) {
-        // Distancia desde el frente de la ola
+export function waveEffect(ledsArr, time, _color) {
+    const baseX = time * 5;
+    for (const led of ledsArr) {
         const dist = Math.abs(led.x - baseX);
-        // Intensidad según la cercanía al frente
-        const t = Math.max(0, 1 - dist / width);
-        const [r, g, b] = hsvToRgb((hue + led.x * 0.02) % 1, 1.0, t);
-        led.r = r;
-        led.g = g;
-        led.b = b;
+        const t = Math.max(0, 1 - dist / 5);
+        const [wr, wg, wb] = hsvToRgb((0.5 + led.x * 0.02) % 1, 1, t);
+        led.r = wr;
+        led.g = wg;
+        led.b = wb;
     }
 }
 
 /**
- * Effect: Reactive (audio)
- * Cambia la intensidad según ctx.audioLevel (0..1).
- * En SignalRGB esto se alimenta del audio-reactive del engine.
- * @param {Array} leds
- * @param {object} ctx - { color: [r,g,b], audioLevel: 0..1 }
+ * Effect: typing (pulse reactivo al centro del teclado)
  */
-function effectReactive(leds, ctx) {
-    const [r, g, b] = ctx.color || [0, 200, 255];
-    const audio = ctx.audioLevel || 0;
-    // Mezcla color base con blanco según audio
-    const factor = audio; // 0..1
-    applySolidColor(leds,
-        Math.round(r + (255 - r) * factor),
-        Math.round(g + (255 - g) * factor),
-        Math.round(b + (255 - b) * factor),
-    );
-}
-
-/**
- * Effect: Typing Reactive (placeholder)
- * Cuando el HID Keyboard IN esté implementado, este effect pintará
- * keys individuales según los keypress events.
- * Por ahora hace un pulso global estilo "ripple from center".
- */
-function effectTyping(leds, ctx) {
-    const speed = ctx.speed || 1.0;
-    const pulse = (Math.sin(ctx.time * speed * 4) + 1) * 0.5; // 0..1
-
-    for (const led of leds) {
-        const dist = Math.sqrt(
-            Math.pow(led.x - 9, 2) +
-            Math.pow(led.y - 2.5, 2)
-        );
-        const t = Math.max(0, 1 - dist / 8) * (0.5 + pulse * 0.5);
+export function typingEffect(ledsArr, time, _color) {
+    const pulse = (Math.sin(time * 4) + 1) * 0.5;
+    for (const led of ledsArr) {
+        const dist = Math.sqrt(Math.pow(led.x - 9, 2) + Math.pow(led.y - 2.5, 2));
+        const t = Math.max(0, 1 - dist / 8) * (0.3 + pulse * 0.7);
         led.r = Math.round(255 * t);
         led.g = Math.round(100 * t);
         led.b = Math.round(200 * t);
@@ -151,25 +87,26 @@ function effectTyping(leds, ctx) {
 }
 
 /**
- * Devuelve la lista de effects disponibles para el plugin.
+ * Registry de effects disponibles.
  */
-function getEffectsList() {
-    return [
-        { id: 'static', name: 'Static Color', fn: effectStatic },
-        { id: 'breathing', name: 'Breathing', fn: effectBreathing },
-        { id: 'wave', name: 'Color Wave', fn: effectWave },
-        { id: 'reactive', name: 'Audio Reactive', fn: effectReactive },
-        { id: 'typing', name: 'Typing Reactive (experimental)', fn: effectTyping },
-    ];
+export const EFFECTS = {
+    static: { label: 'Static', fn: staticEffect },
+    breathing: { label: 'Breathing', fn: breathingEffect },
+    wave: { label: 'Wave', fn: waveEffect },
+    typing: { label: 'Typing', fn: typingEffect },
+};
+
+/**
+ * Aplica un effect al array de LEDs.
+ */
+export function applyEffect(ledsArr, time, color, effectId) {
+    const effect = EFFECTS[effectId] || EFFECTS.static;
+    effect.fn(ledsArr, time, color);
 }
 
-export {
-    effectStatic,
-    effectBreathing,
-    effectWave,
-    effectReactive,
-    effectTyping,
-    getEffectsList,
-    hsvToRgb,
-    applySolidColor,
-};
+/**
+ * Devuelve la lista de IDs de effects disponibles.
+ */
+export function listEffects() {
+    return Object.keys(EFFECTS);
+}

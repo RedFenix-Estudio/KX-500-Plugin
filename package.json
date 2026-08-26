@@ -1,36 +1,33 @@
 {
   "name": "kx500-signalrgb-plugin",
-  "version": "0.1.0",
-  "description": "SignalRGB plugin para el teclado Checkpoint Gaming KX-500 (NA-KB-1001 / Naruto Edition). Single-file ES module. Layout US ANSI 104 keys. Protocolo HID best-effort con presets configurables.",
-  "main": "KX500_Lite.js",
+  "version": "0.2.0",
+  "description": "SignalRGB plugin for Checkpoint KX-500 (NA-KB-1001) — full-size RGB keyboard",
   "type": "module",
+  "main": "KX500_Lite.js",
   "scripts": {
     "test": "node dev/test/validate.js",
-    "validate": "node dev/test/validate.js"
+    "test:smoke": "node dev/test/smoke.js",
+    "inspect": "tshark -r dev/captures/teclado_captura_mixta.pcapng -Y 'usb.transfer_type == 0x01 and usb.endpoint_address == 0x03' -T fields -e frame.number -e usbhid.data",
+    "extract": "powershell -NoProfile -File dev/captures/extract_rgb_packets.ps1"
   },
   "keywords": [
     "signalrgb",
     "keyboard",
     "rgb",
-    "checkpoint-gaming",
-    "kx-500",
-    "naruto",
     "hid",
-    "per-key-rgb"
+    "checkpoint",
+    "kx500",
+    "leaf-ninja",
+    "naruto"
   ],
-  "author": "RedFenix Estudio <erikjreyesc.2003@gmail.com>",
+  "author": "RedFenix Estudio",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/RedFenix-Estudio/KX-500-Plugin.git"
   },
-  "bugs": {
-    "url": "https://github.com/RedFenix-Estudio/KX-500-Plugin/issues"
-  },
   "engines": {
     "node": ">=18"
   },
-  "os": [
-    "win32"
-  ]
+  "devDependencies": {}
 }

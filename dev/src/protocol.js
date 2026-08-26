@@ -1,229 +1,190 @@
 /**
- * KX-500 HID Protocol — BEST-EFFORT (Lite)
+ * KX-500 HID Protocol — Real implementation
  * ─────────────────────────────────────────────────────────────────
- * Implementación Lite del protocolo HID del KX-500.
+ * Basado en captura USBPcap+Wireshark del 2026-08-26.
  *
- * Estado actual: RE parcial. Tenemos confirmado:
- *   - VID/PID:        0x320F / 0x5008
- *   - Interface:      HID Vendor Defined (Usage Page 0xFF1C)
- *   - Canales HID:    RGB OUT (FF1C:0092) + Keyboard IN (standard 0x07)
- *   - APIs del driver oficial: HidD_SetFeature, HidD_SetOutputReport (HidServ.dll)
- *   - Buffer típico: packets HID con header + payload RGB
+ * Hallazgos confirmados:
+ *   - Transporte: HID Output Reports (NO Feature Reports)
+ *   - Endpoint: 0x03 OUT (Interrupt), interface 1 (declarado "HID Mouse")
+ *   - Tamaño: 64 bytes por paquete
+ *   - Report ID: 0x04 (fijo, primer byte)
+ *   - Estructura: [0x04] [CMD] [PARAMS...] [pad 0x00]
+ *   - Heartbeat: [04 01 00 01] START ... [04 02 00 02] END alrededor de cada cmd
+ *   - Magic: 0x55AA en handshake (con VID/PID embedded)
  *
- * Lo que NO sabemos todavía (necesita captura USBPcap en vivo):
- *   - Report ID exacto (probable: 0x00 o 0x01)
- *   - Comando exacto (probable: 0x08 = set_color por patrón SinoWealth)
- *   - Framing por chunk (full frame vs chunks)
- *   - Si hay ACK/handshake inicial
- *
- * Estrategia Lite:
- *   - Implementa el patrón más probable (basado en SinoWealth 0x08 + 90 LED packet).
- *   - En Initialize() hace un "protocol probe" automático: prueba variantes
- *     razonables y deja logs visibles en SignalRGB.
- *   - Si ningún probe responde, el plugin sigue cargando: el usuario obtiene
- *     el layout pero las luces no se encienden hasta calibrar el comando.
- *
- * Para que funcione al 100%:
- *   - Conectar teclado + ejecutar driver oficial (Mechanical Keyboard.exe)
- *     NO requerido (el plugin habla directo al HID bypassing HidServ.dll).
- *   - Wireshark+USBPcap capturando mientras hacés click en efectos del driver.
- *   - Sustituir los bytes en `_buildFrame()` con los reales.
+ * Lo que NO está confirmado aún (necesita capturas individuales):
+ *   - Comando exacto para "per-key color"
+ *   - Comando exacto para "brightness up/down"
+ *   - Formato exacto del RGB data packed (16 triplets vs otros)
+ *   - Comandos para efectos (breathing/wave/etc.)
  */
 
 'use strict';
 
-// Constantes HID del KX-500 (confirmadas por Erik)
+// Constantes HID
 const VID = 0x320F;
 const PID = 0x5008;
-const USAGE_PAGE_RGB = 0xFF1C;  // Vendor Defined RGB channel
-const USAGE_RGB = 0x0092;       // RGB OUT endpoint
-const REPORT_SIZE = 64;          // USB Full Speed HID report size
+const RGB_INTERFACE = 1;
+const RGB_EP_OUT = 0x03;
+const REPORT_SIZE = 64;
+const REPORT_ID = 0x04;
 
-// Constantes de protocolo — best-effort, sujetas a calibración
-const PROTO = {
-    // Command bytes a probar (de más probable a menos)
-    // Basado en: SinoWealth 0x08, Corsair 0x01, HyperX 0x06, Razer 0x0F, etc.
-    candidateCommands: [0x08, 0x01, 0x06, 0x0F, 0x07],
-
-    // Report IDs comunes
-    candidateReportIds: [0x00, 0x01, 0x05, 0x08],
-
-    // Layout modes del frame
-    // 'fixed_header'   : header fijo de 5 bytes + N keys × 3 bytes RGB
-    // 'sinowealth'     : packet estilo SinoWealth: 0x06 0x08 0x00 0x00 0x01 0x00 0x7A 0x01 + RGB triples
-    // 'corsair'        : 0x00 0x00 0x00 0x00 0x00 0x00 0x00 + RGB triples
-    candidateModes: ['sinowealth', 'fixed_header', 'corsair'],
+// Comandos identificados
+const CMD = {
+    HB_START: 0x01,        // START heartbeat
+    HB_END: 0x02,          // END heartbeat
+    SOLID_COLOR: 0x22,     // set solid color (best-guess)
+    PATTERN: 0x17,         // pattern/brightness (best-guess)
+    HANDSHAKE: 0xA2,       // device init
 };
 
-class KX500Protocol {
-    constructor() {
-        this.device = null;
-        this.endpointOpen = false;
-        this.frameSize = REPORT_SIZE;
-        this.mode = null;          // 'sinowealth' | 'fixed_header' | 'corsair'
-        this.command = null;       // byte de comando activo
-        this.reportId = null;      // report ID activo
-        this._probeResults = [];   // resultados del probe
+// Magic constants dentro del payload
+const MAGIC = {
+    HB_START_PARAMS: [0x00, 0x01],
+    HB_END_PARAMS: [0x00, 0x02],
+    COLOR_PREFIX: [0x12, 0x11, 0x36, 0x00, 0x00, 0x00, 0x00],  // [param=0x12, 0x11, 0x36, padding]
+};
+
+// Handshake packet (visto 3x en captura inicial)
+const HANDSHAKE_PACKET = new Uint8Array([
+    0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
+    0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
+    0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    0x11, 0x12, 0x14
+]);
+
+/**
+ * Construye un paquete HID RGB de 64 bytes.
+ * @param {number} cmd - byte de comando
+ * @param {number[]} params - parámetros (sin Report ID)
+ * @returns {Uint8Array} paquete de 64 bytes
+ */
+function buildPacket(cmd, params = []) {
+    const packet = new Uint8Array(REPORT_SIZE);
+    packet[0] = REPORT_ID;
+    packet[1] = cmd & 0xFF;
+    for (let i = 0; i < params.length && i + 2 < REPORT_SIZE; i++) {
+        packet[2 + i] = params[i] & 0xFF;
     }
+    // Padding con 0x00 (ya está por defecto)
+    return packet;
+}
 
-    /**
-     * Inicializa el protocolo. Llamado una vez por SignalRGB.
-     * @param {object} device - objeto `device` global de SignalRGB
-     */
-    initialize(device) {
-        this.device = device;
-    }
+/**
+ * Construye heartbeat START packet.
+ */
+function buildHeartbeatStart() {
+    return new Uint8Array([REPORT_ID, CMD.HB_START, 0x00, 0x01]);
+}
 
-    /**
-     * Construye un packet HID completo listo para enviar al teclado.
-     *
-     * @param {Array<{r,g,b,name,x,y}>} leds - array de keys con su color
-     * @param {number} frameIndex - índice del frame (0, 1, 2...) para tracking
-     * @returns {number[]} packet listo para device.write()
-     */
-    buildFrame(leds, frameIndex = 0) {
-        if (this.mode === 'sinowealth') {
-            return this._buildSinowealthFrame(leds);
-        } else if (this.mode === 'fixed_header') {
-            return this._buildFixedHeaderFrame(leds);
-        } else if (this.mode === 'corsair') {
-            return this._buildCorsairFrame(leds);
-        }
-        // Fallback: sinowealth es el patrón más común
-        return this._buildSinowealthFrame(leds);
-    }
+/**
+ * Construye heartbeat END packet.
+ */
+function buildHeartbeatEnd() {
+    return new Uint8Array([REPORT_ID, CMD.HB_END, 0x00, 0x02]);
+}
 
-    _buildSinowealthFrame(leds) {
-        // Patrón SinoWealth (Hydra 10 / Redragon KS82B / Portronics):
-        //   [0x06, 0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01, R, G, B, R, G, B, ...]
-        //   Header 8 bytes + N keys × 3 bytes RGB
-        const packet = [0x06, 0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01];
-
-        for (const led of leds) {
-            packet.push(led.r & 0xFF);
-            packet.push(led.g & 0xFF);
-            packet.push(led.b & 0xFF);
-        }
-
-        // Pad a múltiplo del report size (64 bytes)
-        while (packet.length < this.frameSize) {
-            packet.push(0x00);
-        }
-
-        return packet;
-    }
-
-    _buildFixedHeaderFrame(leds) {
-        // Patrón genérico Vendor Defined:
-        //   [ReportID, Command, StartIdx, Count, ...RGB]
-        const packet = [
-            this.reportId || 0x00,
-            this.command || 0x08,
-            0x00,  // start index
-            leds.length & 0xFF,
-        ];
-        for (const led of leds) {
-            packet.push(led.r & 0xFF);
-            packet.push(led.g & 0xFF);
-            packet.push(led.b & 0xFF);
-        }
-        while (packet.length < this.frameSize) {
-            packet.push(0x00);
-        }
-        return packet;
-    }
-
-    _buildCorsairFrame(leds) {
-        // Patrón Corsair K70 style (7 bytes de padding + RGB triples)
-        const packet = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        for (const led of leds) {
-            packet.push(led.r & 0xFF);
-            packet.push(led.g & 0xFF);
-            packet.push(led.b & 0xFF);
-        }
-        while (packet.length < this.frameSize) {
-            packet.push(0x00);
-        }
-        return packet;
-    }
-
-    /**
-     * Envía un frame al dispositivo vía SignalRGB.
-     * SignalRGB maneja el chunking al endpoint HID configurado por Validate().
-     */
-    sendFrame(leds) {
-        if (!this.device) return;
-        const packet = this.buildFrame(leds);
-
-        try {
-            // send_report = HID feature report (HidD_SetFeature)
-            // write = HID output report
-            // El KX-500 probablemente acepta ambos, pero feature report es
-            // más portable (no requiere output endpoint abierto).
-            this.device.send_report(packet, packet.length);
-        } catch (err) {
-            if (this.device && this.device.log) {
-                this.device.log(`[KX500] send_report error: ${err.message}`);
-            }
+/**
+ * Construye un paquete de "solid color" (todos los keys del mismo color).
+ *
+ * Basado en captura mixta: `04 22 12 11 36 00 00 00 00 FF 00 00 FF 00 00 ...`
+ * Estructura probable:
+ *   [04 22 12 11 36 00 00 00 00] [RGB triplets × zoneCount]
+ *
+ * @param {number} r,g,b - color 0..255
+ * @param {Object} [opts]
+ * @param {number} [opts.zoneCount=16] - cantidad de zonas (16 visto en captura)
+ * @param {number} [opts.param=0x12] - byte de parámetro
+ * @returns {Uint8Array}
+ */
+function buildSolidColor(r, g, b, opts = {}) {
+    const { zoneCount = 16, param = 0x12 } = opts;
+    const packet = new Uint8Array(REPORT_SIZE);
+    packet[0] = REPORT_ID;
+    packet[1] = CMD.SOLID_COLOR;
+    packet[2] = param & 0xFF;
+    packet[3] = 0x11;
+    packet[4] = 0x36;
+    // packet[5..8] = 0x00 (padding)
+    for (let i = 0; i < zoneCount; i++) {
+        const offset = 9 + i * 3;
+        if (offset + 2 < REPORT_SIZE) {
+            packet[offset] = r & 0xFF;
+            packet[offset + 1] = g & 0xFF;
+            packet[offset + 2] = b & 0xFF;
         }
     }
+    return packet;
+}
 
-    /**
-     * Hace un probe automático al Initialize: prueba las combinaciones más
-     * probables de (command, reportId, mode) y deja el modo activo en el
-     * que el dispositivo parece responder (sin error, sin timeout).
-     *
-     * El probe NO es destructivo — solo envía packets de "clear" (todos 0x00).
-     * Si ningún probe funciona, deja modo null y el plugin sigue cargando
-     * con el layout pero sin iluminación. Erik puede calibrar después.
-     */
-    async probe() {
-        if (!this.device) return;
+/**
+ * Construye paquete de shutdown (todos los LEDs apagados).
+ */
+function buildShutdown() {
+    return buildSolidColor(0, 0, 0, { param: 0x00 });
+}
 
-        const log = (msg) => {
-            if (this.device.log) this.device.log(msg);
-        };
+/**
+ * Codifica un color RGB (r,g,b 0..255) en triplet packed (3 bytes).
+ */
+function colorToTriplet(r, g, b) {
+    return [r & 0xFF, g & 0xFF, b & 0xFF];
+}
 
-        log('[KX500] Iniciando protocol probe...');
-        log(`[KX500] Probando ${PROTO.candidateCommands.length} commands × ${PROTO.candidateReportIds.length} report IDs × ${PROTO.candidateModes.length} modes`);
+/**
+ * Verifica que un paquete tenga estructura válida (Report ID 0x04).
+ * Acepta paquetes cortos (heartbeat de 4 bytes) o completos (64 bytes).
+ */
+function isValidPacket(packet) {
+    if (!(packet instanceof Uint8Array)) return false;
+    if (packet.length < 2) return false;
+    if (packet[0] !== REPORT_ID) return false;
+    return true;
+}
 
-        // Empezamos con el modo más probable
-        this.mode = 'sinowealth';
-        this.command = 0x08;
-        this.reportId = 0x00;
+/**
+ * Verifica que un paquete sea de tamaño completo (64 bytes).
+ */
+function isFullPacket(packet) {
+    return packet instanceof Uint8Array && packet.length === REPORT_SIZE;
+}
 
-        // Intentar clear packet (todos negros) — debería ser siempre seguro
-        try {
-            const clearPacket = this.buildFrame([{ r: 0, g: 0, b: 0 }], 0);
-            this.device.send_report(clearPacket, clearPacket.length);
-            log('[KX500] Probe: sinowealth mode OK (no exception)');
-        } catch (err) {
-            log(`[KX500] Probe: sinowealth falló: ${err.message}`);
-            // Fallback al segundo más probable
-            this.mode = 'fixed_header';
-        }
-
-        log(`[KX500] Protocol probe finalizado. Modo activo: ${this.mode}`);
-    }
-
-    /**
-     * Devuelve info del protocolo activo (para debugging).
-     */
-    getInfo() {
-        return {
-            mode: this.mode,
-            command: this.command,
-            reportId: this.reportId,
-            frameSize: this.frameSize,
-        };
-    }
+/**
+ * Extrae metadata de un paquete (cmd + params).
+ * Acepta paquetes cortos (heartbeat) o completos.
+ */
+function parsePacket(packet) {
+    if (!isValidPacket(packet)) return null;
+    const cmd = packet[1];
+    const params = Array.from(packet.slice(2));
+    return {
+        cmd,
+        params,
+        isHeartbeatStart: cmd === CMD.HB_START,
+        isHeartbeatEnd: cmd === CMD.HB_END,
+        isFullPacket: isFullPacket(packet),
+    };
 }
 
 export {
-    KX500Protocol,
     VID,
     PID,
-    USAGE_PAGE_RGB,
-    USAGE_RGB,
+    RGB_INTERFACE,
+    RGB_EP_OUT,
     REPORT_SIZE,
+    REPORT_ID,
+    CMD,
+    MAGIC,
+    HANDSHAKE_PACKET,
+    buildPacket,
+    buildHeartbeatStart,
+    buildHeartbeatEnd,
+    buildSolidColor,
+    buildShutdown,
+    colorToTriplet,
+    isValidPacket,
+    isFullPacket,
+    parsePacket,
 };

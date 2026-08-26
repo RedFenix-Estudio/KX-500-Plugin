@@ -8,6 +8,8 @@ package-lock.json
 # Captures / dumps (pueden ser pesados)
 captures/
 tools/captures/
+# dev/captures/ contiene scripts utiles (.ps1, .py) y dumps pesados (.pcapng, .pcap)
+# Solo ignoramos los dumps pesados, no los scripts
 *.pcapng
 *.pcap
 *.bin

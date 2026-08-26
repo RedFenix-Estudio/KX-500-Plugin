@@ -1,172 +1,161 @@
-# Análisis del Plugin KX-500 Lite vs Addons SignalRGB que sí funcionan
+# KX-500 RE Analysis — Historial completo
 
-> Documento técnico de qué aprendimos comparando nuestro plugin con addons
-> públicos de SignalRGB que **sí funcionan en producción**.
-
----
-
-## 📚 Addons estudiados
-
-| Addon | Repo | Estado |
-|---|---|---|
-| **Portronics Hydra 10** (SinoWealth) | `MRtojisan/portronics-hydra-10-SignalRGB-Plugin` | ✅ Funciona |
-| **Redragon Ashe K626** (SinoWealth) | `lucas-hochmann-rosa/signalrgb-redragon-k626-plugin` | ✅ Funciona |
-| **PMO Wave75 Pro** | `AkselDinh/PMO-Wave75Pro-SignalRGB-Plugin` | ✅ Funciona |
-| **Aula S75 Pro** | `AkselDinh/Aula-S75Pro-SignalRGB-Plugin` | ✅ Funciona |
-| **Plugin template oficial** | `docs.signalrgb.com/developer/plugins` | 📖 Documentación |
+> Análisis paso a paso de cómo descubrimos el protocolo HID del KX-500.
+>
+> Este documento es histórico-técnico. Para el estado actual del RE, ver [PROTOCOL.md](./PROTOCOL.md).
 
 ---
 
-## 🚨 Problemas encontrados en nuestro plugin Lite v1 (los que SignalRGB no leía)
+## 📅 Timeline del RE
 
-### 1. **`ProductId()` retornaba single value, no array** ⚠️ CRÍTICO
+### 2026-08-19 — Driver oficial + RE estático
 
-| | v1 (roto) | v2 (arreglado) |
-|---|---|---|
-| Forma | `return 0x5008;` | `return [0x5008];` |
-| Por qué | SignalRGB valida con `Array.includes()` internamente. Un solo número no matchea con el patrón esperado. | Array explícito de PIDs soportados |
+- Descargamos e instalamos el driver oficial de Checkpoint
+- Path del ejecutable: `C:\Program Files (x86)\CHECKPOINT KX-500\CHECKPOINT_KX_500.exe`
+- **HidServ.dll** (35 KB): decompilada en Ghidra, confirmada usa `HidD_SetFeature`, `HidD_GetFeature`, `HidP_SetUsageValue`, etc. → confirma que el RGB va por **feature reports HID**
+- **CHECKPOINT_KX_500.exe** (4 MB): decompilado, llama HidServ vía window messages (`0x40D`)
+- **Procmon logs**: 44 GB capturados pero NO contienen tráfico HID real (HidD_* son kernel-mode, bypass Procmon)
+- USBPcap NO estaba instalado todavía
 
-Verificado contra Redragon K626 (`ProductId() { return [0x0049]; }`).
+### 2026-08-22 — USBPcap instalado
 
-### 2. **`Initialize()` no llamaba `device.setName/setSize/setControllableLeds`** ⚠️ CRÍTICO
+- Instalamos USBPcap desde https://desowin.org/usbpcap/
+- 4 interfaces USBPcap visibles en Wireshark (USBcap1-4)
+- Aún no probamos con el KX-500
 
-| | v1 | v2 |
-|---|---|---|
-| Comportamiento | Device "aparecía" pero no se podía usar — no estaba registrado en la UI interna de SignalRGB | Llama los 3 setters para que el device se registre correctamente |
+### 2026-08-25 — Descriptor HID descubierto vía registry
 
-```js
-// v2 — patrón del Redragon K626 plugin:
-device.setName(DEVICE_NAME);
-device.setSize(LAYOUT_SIZE);
-device.setControllableLeds(KX500_KEYS.map(k => k.name), KX500_KEYS.map(k => [k.x, k.y]));
-```
+- Leímos `HKLM\SYSTEM\CurrentControlSet\Enum\HID\VID_320F&PID_5008` directamente
+- Confirmamos las 5 colecciones HID del KX-500:
+  - MI_00: Generic Desktop Keyboard (BIOS)
+  - MI_01 Col01: Generic Desktop Keyboard (NKRO)
+  - MI_01 Col02: Wireless Radio Controls
+  - MI_01 Col03: Consumer Control
+  - MI_01 Col04: **Vendor Defined (FF1C:0092)** ← RGB
+- Publicamos plugin v0.1.0 Lite con esta info
 
-### 3. **`Validate()` incompleto — faltaba filtrar por `interface`** ⚠️
+### 2026-08-25 — v0.1.0 push inicial
 
-| | v1 | v2 |
-|---|---|---|
-| Forma | Solo filtraba `usage_page === 0xFF1C && usage === 0x0092` | Filtra también `interface === 1` |
+- Repo: https://github.com/RedFenix-Estudio/KX-500-Plugin
+- Branch main, 45 tests OK
+- Plugin single-file con presets HID seleccionables (sinowealth, corsair, vendor, etc.)
+- Comentario en código: "best-effort SinoWealth, RE pendiente con captura USBPcap"
 
-SignalRGB ofrece el `endpoint` completo con campos `interface`, `usage_page`, `usage`, `collection`. Si no filtrás por `interface`, el plugin puede matchear dispositivos no deseados.
+### 2026-08-26 10:31 GMT-4 — Primera captura USBPcap funciona
 
-### 4. **Falta `device.pause(1)` después de `device.send_report()`** ⚠️
+- Erik confirma USBPcap2 es el KX-500 (los packets de teclas cambian al tipear)
+- Captura `teclado_captura.pcapng` con acciones mixtas:
+  - Cambio de colores (rojo, verde, azul, blanco, off)
+  - Cambio de brillo
+  - Cambio de velocidad de efecto
+  - Aplicar effectos (rainbow, breathing, etc.)
+  - Teclear varias teclas
 
-| | v1 | v2 |
-|---|---|---|
-| Sin pause | El firmware del MCU puede ignorar frames si los mandamos sin pausa → luces no encienden o parpadean | `device.pause(1)` entre cada `send_report()` |
+### 2026-08-26 10:42 GMT-4 — Análisis inicial
 
-El Redragon K626 plugin lo hace. Sin esto, los keyboards pueden saturarse.
+- 1902 frames capturados, 77442 bytes totales
+- Tamaño de archivo: 140 KB
+- **Sorpresa:** No hay paquetes de 312/320 bytes (lo que esperábamos para RGB per-key)
+- Tipos de transferencia: solo Control (0x02) e Interrupt (0x01)
+- Tamaños: 0, 8, 18, 25, 64, 66 bytes (ninguno coincide con RGB frame esperado)
 
-### 5. **`device.notify()` no se usaba para errores** ⚠️
+### 2026-08-26 10:48 GMT-4 — Descriptors HID leídos del pcap
 
-| | v1 | v2 |
-|---|---|---|
-| Errores silenciados | `device.log(...)` pero el usuario no se entera | `device.notify(title, msg, severity)` — aparece como popup |
+- tshark verbose mode reveló el **Configuration Descriptor completo**
+- Hallazgo crítico: el KX-500 tiene **2 interfaces HID**:
+  - Interface 0: HID Keyboard (1 endpoint IN 8B)
+  - Interface 1: **HID Mouse** declarado (2 endpoints: 0x82 IN 64B, 0x03 OUT 64B) ← **CANAL RGB**
+- bInterfaceProtocol = 0x02 (Mouse), NO 0x00 (None) como pensábamos
+- El "Mouse" es un truco del fabricante chino para evitar problemas con Windows
 
-`device.notify(title, msg, severity)` con severity `0=info, 1=warning, 2=error`.
+### 2026-08-26 11:00 GMT-4 — Protocolo RGB descubierto
 
-### 6. **Packet pad size incorrecto: 64 vs 520 bytes** ⚠️
+- Filtramos por `usb.transfer_type == 0x01 AND usb.endpoint_address == 0x03`
+- 324 paquetes HID Output Reports de 64 bytes
+- **Todos empiezan con byte 0x04** (Report ID)
+- **Estructura:** `[04] [CMD] [PARAMS...] [pad 0x00]`
+- **55 comandos únicos** identificados
+- Heartbeat: `04 01 00 01` (START, 46x) y `04 02 00 02` (END, 46x)
+- Handshake: `04 A2 03 04 2C 00 00 00 55 AA FF 02 0F 32 08 50 01 01 ...` (3x, contiene VID/PID embebidos)
+- "Solid color" probable: `04 22 12 11 36 00 00 00 00 FF 00 00 FF 00 00 ...` (16 triplets de `FF 00 00` = rojo)
 
-| | v1 | v2 |
-|---|---|---|
-| Tamaño | `while (packet.length < 64) pad` | `while (packet.length < 520) pad` |
+### 2026-08-26 11:03 GMT-4 — Erik corrige análisis previo
 
-El Redragon K626 usa 382 bytes, Hydra 10 usa 520 bytes, otros keyboards chinos usan 64, 96, 128 o 256. **El tamaño exacto depende del modelo y hay que calibrarlo con USBPcap.** Default razonable para SinoWealth: 520.
+- Erik confirma: SÍ es RGB per-key con color picker arbitrario
+- El KX-500 prende en magenta, violeta, cyan, cualquier color
+- Los efectos multicolores son fluidos
+- **La captura mixta confundió mi análisis** — necesito capturas individuales
 
-### 7. **`ImageUrl()` retornaba string vacío** ⚠️
+### 2026-08-26 11:30 GMT-4 — v0.2.0-dev publicado
 
-| | v1 | v2 |
-|---|---|---|
-| Forma | `return "";` | `return "https://raw.githubusercontent.com/.../assets/KX-500.png";` |
-
-SignalRGB carga la imagen via HTTP — necesita URL a `raw.githubusercontent.com` (no a la página del repo). Si no hay imagen, el device aparece "sin foto" pero sigue funcionando.
-
-### 8. **`/* global ... */` comment faltaba** ⚠️ menor
-
-```js
-/* global
-shutdownColor:readonly
-LightingMode:readonly
-forcedColor:readonly
-*/
-```
-
-Este comentario le dice al editor y al bundler que esas globals existen (las inyectará SignalRGB en runtime). Sin esto, los editores se quejan pero el plugin funciona igual.
-
-### 9. **`Documentation()` no definido** ⚠️ menor
-
-Algunos plugins lo definen para que SignalRGB muestre un link de ayuda al usuario. Nosotros ahora devolvemos la URL del repo.
-
----
-
-## 🆚 Tabla comparativa: v1 vs v2 vs Redragon K626
-
-| Feature | KX-500 Lite v1 | KX-500 Lite v2 | Redragon K626 |
-|---|---|---|---|
-| `ProductId()` retorna array | ❌ | ✅ | ✅ |
-| `device.setName()` en Initialize | ❌ | ✅ | ✅ |
-| `device.setSize()` en Initialize | ❌ | ✅ | ✅ |
-| `device.setControllableLeds()` | ❌ | ✅ | ✅ |
-| `device.setImageFromUrl()` | ❌ | (URL provista, no llamada directa) | ✅ |
-| `Validate()` filtra interface | ❌ | ✅ (`interface===1`) | ✅ (`interface===1`) |
-| `device.pause(1)` | ❌ | ✅ | ✅ |
-| `device.notify()` errores | ❌ | ✅ | ✅ |
-| Packet pad a 520 bytes | ❌ (64) | ✅ (520) | ✅ (382) |
-| `ImageUrl()` raw GitHub | ❌ | ✅ | ✅ |
-| `/* global */` comment | ❌ | ✅ | ✅ |
-| `Documentation()` | ❌ | ✅ | ✅ |
-| `ConflictingProcesses()` | ✅ | ✅ | ❌ (no lo usa) |
+- Plugin reescrito con:
+  - `device.write()` (output report) en vez de `device.send_report()` (feature report)
+  - Report ID 0x04 fijo
+  - 64 bytes por paquete (no 520)
+  - Heartbeat wrapper START/END
+  - Handshake en Initialize
+  - 35/35 tests pasando
+- Documentación actualizada con descubrimientos
+- Repo reorganizado con `dev/captures/` para futuras capturas individuales
 
 ---
 
-## ✅ Tests después del refactor
+## 🧠 Lecciones aprendidas
 
-```
-> node test/validate.js
-  43 ✅ / 0 ❌  (era 30 ✅ en v1)
+### Lección 1: El KX-500 NO es un dispositivo HID "estándar"
+- Declara el canal RGB como **HID Mouse** (`bInterfaceProtocol = 0x02`) en vez de Vendor Defined (`0xFF1C:0092`)
+- Truco común en dispositivos chinos para evitar problemas con Windows
+- Sin USBPcap nunca lo hubiéramos descubierto — los descriptor HID tools a veces ocultan esta info
 
-Cambios cubiertos por tests:
-  - ProductId() retorna [0x5008]
-  - Validate() filtra interface + usage_page + usage
-  - Initialize() llama setName/setSize/setControllableLeds
-  - send_report() va seguido de pause(1)
-  - Render() y Shutdown() también llaman pause(1)
-  - Header SinoWealth (06 08 00 00 01 00 7A 01) verificado
-  - Report size 520 (estándar)
-```
+### Lección 2: HID Feature Reports vs Output Reports
+- **Inicialmente asumimos** que el KX-500 usa feature reports (porque HidServ.dll usa HidD_SetFeature)
+- **USBPcap reveló** que el RGB se manda por **output reports** (interrupts OUT)
+- Posible explicación: HidServ.dll puede usar AMBOS, y nuestro caso específico es output
+- El plugin v0.1.0 usaba feature reports → no funcionaba
+- El plugin v0.2.0 usa output reports → debería funcionar
 
----
+### Lección 3: Capturas mixtas son confusas
+- 324 paquetes con acciones mezcladas → imposible saber qué byte va con qué acción
+- Solución: capturas individuales (1 acción por pcap)
+- Erik ya empezó a hacerlas: `01_solid_color.pcapng`, etc.
 
-## 🔧 Lo que falta para que las luces enciendan al 100%
-
-Con todos los fixes v2, **SignalRGB debería detectar el KX-500 correctamente**.
-Lo único que queda es calibrar el header HID real:
-
-1. Cerrá SignalRGB
-2. Iniciá driver oficial `Mechanical Keyboard.exe` o `CHECKPOINT_KX_500.exe`
-3. Iniciá Wireshark + USBPcap (ya están en `tools/`)
-4. Aplicá un color desde el driver oficial
-5. Capturá los bytes → editá `PROTOCOL_HEADER` en `KX500_Lite.js`
-6. Si el report size es diferente a 520, ajustá `HID_REPORT_SIZE`
-
-Una vez calibrado, las luces encienden sin tocar nada más.
+### Lección 4: USBPcap es indispensable
+- Procmon (44 GB) NO capturó nada útil
+- USBPcap (140 KB) capturó todo
+- USBPcap intercepta a nivel USB físico, no API-level
+- Indispensable para cualquier RE HID futuro
 
 ---
 
-## 📦 Cómo Erik prueba la nueva versión
+## 📚 Referencias utilizadas
 
-1. Descargá la nueva versión de `KX500_Lite.js` desde el repo
-2. Reemplazá el archivo viejo en `%LOCALAPPDATA%\VortxEngine\app-*\Signal-x64\Plugins\`
-4. Reiniciá SignalRGB
-5. Devices → debería aparecer "Checkpoint KX-500 (NA-KB-1001)"
-6. Enable streaming
-7. Si las luces no encienden → calibrar header (arriba)
+- USBPcap: https://desowin.org/usbpcap/
+- Wireshark USB/HID docs: https://wiki.wireshark.org/USB
+- USB Made Simple: https://www.usbmadesimple.co.uk/
+- HID Specification: https://www.usb.org/document-library/hid-specification
+- HidServ.dll decompilación: Ghidra (open source)
+- Protocolos similares: Sinowealth 258a:0049 (Redragon KS82B), Corsair K70
 
 ---
 
-## 🙏 Créditos del análisis
+## 🎯 Estado actual (2026-08-26 11:30 GMT-4)
 
-- `MRtojisan/portronics-hydra-10-SignalRGB-Plugin` — patrón SinoWealth base
-- `lucas-hochmann-rosa/signalrgb-redragon-k626-plugin` — el más limpio y completo
-- `AkselDinh/PMO-Wave75Pro-SignalRGB-Plugin` — confirmación de packet pad patterns
-- `docs.signalrgb.com/developer/plugins/` — spec oficial
+| Componente | Estado | Notas |
+|---|---|---|
+| Plugin estructura | ✅ | Single-file `KX500_Lite.js` |
+| HID transport | ✅ | Output Report, 64B, Report ID 0x04 |
+| Layout 104 keys | ✅ | Full-size US ANSI |
+| Heartbeat wrapper | ✅ | START/END automático |
+| Handshake packet | ✅ | Mandado en Initialize |
+| Solid color (promedio) | ⚠️ | Manda color promedio de todos los keys |
+| Per-key RGB preciso | ⏳ | Pendiente capturas individuales |
+| Brightness control | ⏳ | Comando exacto no confirmado |
+| Effectos nativos | ⏳ | Pendiente capturas individuales |
+| Tests automatizados | ✅ | 35/35 pasando |
+
+**Próximos pasos:**
+1. Erik hace capturas individuales (1 acción por pcap)
+2. Mapeamos comandos → acciones con esas capturas
+3. Refinamos `buildSolidColor()` con bytes exactos
+4. Implementamos per-zone/per-key RGB
+5. v0.3.0 con soporte completo

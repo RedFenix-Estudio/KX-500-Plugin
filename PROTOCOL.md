@@ -1,153 +1,251 @@
 # KX-500 HID Protocol — Estado del RE
 
 > Documento vivo. Se actualiza cada vez que descubrimos un comando nuevo del driver oficial.
+>
+> **Última actualización:** 2026-08-26 — Hallazgos confirmados vía **USBPcap + Wireshark** (captura real del driver oficial en acción).
 
-## Dispositivo
+---
 
-| Campo | Valor |
-|---|---|
-| USB VID | `0x320F` |
-| USB PID | `0x5008` |
-| Versión firmware | `0x0101` (REV_0101 visible en registry) |
-| Driver oficial path | `C:\Program Files (x86)\CHECKPOINT KX-500\CHECKPOINT_KX_500.exe` |
-| Driver service | `HidServ.dll` (35 KB) — usa HidD_SetFeature/GetFeature, HidP_SetUsageValue, etc. |
-| Interfaz HID RGB | `FF1C:0092` (Vendor Defined, OUT endpoint) — **col04** |
-| Path típico (Win) | `\\\\?\\HID#VID_320F&PID_5008#...` |
-| Layout | Full-size US ANSI 104 keys (con numpad, F1-F12, nav cluster, Win/Fn, Menu) |
+## 🟢 Lo que está CONFIRMADO (con captura USBPcap)
 
-## 🔍 Descriptor HID — mapa completo del dispositivo (2026-08-25)
+### Dispositivo y endpoints
 
-Confirmado leyendo `HKLM\SYSTEM\CurrentControlSet\Enum\HID\VID_320F&PID_5008\*\HardwareID` y `Get-PnpDevice`:
+| Campo | Valor | Fuente |
+|---|---|---|
+| USB VID | `0x320F` | descriptor |
+| USB PID | `0x5008` | descriptor |
+| Versión firmware | `0x0101` | `bcdDevice` |
+| Driver oficial path | `C:\Program Files (x86)\CHECKPOINT KX-500\CHECKPOINT_KX_500.exe` | registry |
 
-| Colección | Usage Page | Usage | Tipo | Función probable |
+**Interfaces HID que expone el KX-500** (leído del Configuration Descriptor en la captura):
+
+| # | Interface | bInterfaceClass | Protocol | Endpoints | Función |
+|---|---|---|---|---|---|
+| 0 | 0 | HID (0x03) | Keyboard (0x01) | `0x81 IN` (8B, int) | BIOS Keyboard input |
+| 1 | 1 | HID (0x03) | **Mouse (0x02)** ⚠️ | `0x82 IN` (64B, int) + `0x03 OUT` (64B, int) | **🎨 Canal RGB** (declarado Mouse como truco) |
+
+⚠️ **Detalle clave:** El canal RGB está declarado como **HID Mouse** (`bInterfaceProtocol = 0x02`), NO como Vendor Defined. Esto es un patrón común en teclados chinos para evitar problemas con Windows.
+
+### 🎨 Protocolo RGB — HID Output Reports a `endpoint 0x03 OUT`
+
+**Estructura universal confirmada** (todos los paquetes del driver oficial cumplen):
+
+```
+[0x04] [CMD] [PARAMETROS...] [padding 0x00 hasta 64 bytes]
+^^^^^^  ^^^^^  ^^^^^^^^^^^^^
+│       │      └─ 1-N bytes según el comando
+│       └─ byte de comando (0x00–0xFF)
+└─ Report ID HID = 0x04 (fijo en TODOS los paquetes RGB)
+```
+
+**Tamaño fijo: 64 bytes** (cada paquete).
+
+**Transporte:** `device.write()` (HID Output Report), NO `device.send_report()` (Feature Report). Esto es crítico — el plugin v0.1.0 usaba feature reports, los cuales NO eran interceptados por la captura porque el KX-500 no responde a feature reports, solo a output reports.
+
+### Heartbeat / framing (CONFIRMADO)
+
+Antes y después de cada comando real, el driver oficial manda un par fijo:
+
+```
+[04 01 00 01]   ← START (46 veces en la captura mixta)
+[ ... comando real ... ]
+[04 02 00 02]   ← END (46 veces en la captura mixta)
+```
+
+**Implicación para el plugin:** cada comando RGB debe ir envuelto en este par `START ... END`.
+
+### Comandos identificados (55 únicos)
+
+Resumen por familia (ver `dev/captures/inspect_rgb_hex.ps1` para extraer todos):
+
+| Familia | Patrón | Ejemplo | Frecuencia | Interpretación probable |
 |---|---|---|---|---|
-| MI_00 | `0x0001` | `0x0006` | Generic Desktop / Keyboard | BIOS-mode keyboard (USB boot) |
-| MI_01 Col01 | `0x0001` | `0x0006` | Generic Desktop / Keyboard | Keyboard HID completo (NKRO) |
-| MI_01 Col02 | `0x0001` | `0x000C` | Generic Desktop / Wireless Radio | Wireless radio controls HID |
-| MI_01 Col03 | `0x000C` | `0x0001` | Consumer / Consumer Control | Media keys (play/pause, volume, etc.) |
-| **MI_01 Col04** | **`0xFF1C`** | **`0x0092`** | **Vendor Defined** | **🎨 RGB CONTROL — NUESTRO OBJETIVO** |
+| **Heartbeat** | `[04] [01] [00 01]` | `04 01 00 01` | 46x | START frame |
+| **Heartbeat** | `[04] [02] [00 02]` | `04 02 00 02` | 46x | END frame |
+| **Setup corto** | `[04] [CMD] [VAL] [11 03] [XX] [00 00 8]` | `04 0F 01 11 03 7B 00 00 8` | 1-3x | Activar/seleccionar efecto/brightness |
+| **RGB data (tipo B)** | `[04] [CMD] [LEN] [11 36] [00 00 ...] [RGB packed]` | `04 22 12 11 36 00 00 00 00 FF 00 00 ...` | 1x | Set color RGB (packed) |
+| **Handshake** | `[04] [A2 03 04 2C 00 00 00 55 AA FF ...]` | `04 A2 03 04 2C 00 00 00 55 AA FF 02 0F 32 08 50 01 01 00 18 00 00 00 00 01 02 ...` | 3x | Inicialización dispositivo |
 
-**Implicaciones para el plugin Lite:**
-- ✅ `Validate(usage_page=0xFF1C, usage=0x0092)` matchea SOLO el canal RGB (Col04)
-- ✅ `Validate(usage_page=0x0001, usage=0x0006)` matchea el keyboard HID (Col01) — habilita `typing_reactive`
-- ✅ El plugin actual está bien targeteado
+### Magic 0x55AA (CONFIRMADO)
 
-**Hallazgos del Procmon logs (10 archivos .pml, 44 GB):**
-- Los .pml NO contienen tráfico HID real (las APIs HidD_SetFeature son kernel-mode y bypass Procmon)
-- Pero **sí confirman** que el driver oficial `CHECKPOINT_KX_500.exe` está en `C:\Program Files (x86)\CHECKPOINT KX-500\`
-- Y enumeran las 5 colecciones HID correctamente
-- **Conclusión:** para capturar bytes HID RGB hace falta **USBPcap** (intercepta USB físico, no API-level)
+El handshake `04 A2 03 04 2C 00 00 00 55 AA ...` contiene:
+- Magic: `55 AA FF` (posible versión 0x02 0x0F 0x32 0x08 0x50 0x01 ...)
+- **Lo interesante:** `0F 32 08 50` decodificado como little-endian podría ser VID/PID del dispositivo:
+  - `0F 32` → bytes 0x0F y 0x32 → little-endian uint16 = `0x320F` = **VID KX-500** ✓
+  - `08 50` → bytes 0x08 y 0x50 → little-endian uint16 = `0x5008` = **PID KX-500** ✓
+  - Confirmado: el handshake se identifica a sí mismo
+- Bitmap de keys (después del header): `01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 14` = **19 IDs de keys** consecutivos con gap (0x13 faltante)
 
-## Hallazgos del RE previo (Ghidra + decompilación)
+⚠️ **Implicación:** El KX-500 podría tener **~19 zonas RGB** (no 104 LEDs individuales). El driver permite "pintar per-key" pero internamente puede mapear a zonas.
 
-### `HidServ.dll` (35 KB) — HID class driver wrapper
+### Color data packed (HALLAZGO NUEVO)
 
-APIs HID que importa y usa:
-- `HidD_SetFeature` / `HidD_GetFeature` → **feature reports** (canal primario del RGB)
-- `HidD_GetAttributes`, `HidD_GetCaps`, `HidD_GetHidGuid` → enumeración
-- `HidP_GetUsages`, `HidP_SetUsages`, `HidP_GetUsageValue`, `HidP_SetUsageValue` → manipulación de Usages
-- `HidD_FlushQueue`, `HidD_SetConfiguration` → control de buffers
-- `HidP_TranslateUsagesToI8042ScanCodes` → convierte HID usages a scan codes PS/2
-- `HidP_GetExtendedAttributes`, `HidP_UsageListDifference` → features avanzados
-
-**Implicación:** el driver oficial habla con el KX-500 principalmente vía **feature reports** (no output reports). El plugin Lite usa `device.send_report()` que es exactamente eso.
-
-Funciones exportadas del HidServ.dll:
-- `Init`, `End`, `Debug`
-- `RequestGetDeviceCount`, `RequestGetFeature`, `RequestSetFeature`
-- `RequestWrite`, `RequestWriteOne`
-- `RequestAsyncRead`
-- `RequestStatusGet`, `RequestStatusWrite`, `RequestStatusSetFeature`
-
-El driver `CHECKPOINT_KX_500.exe` (4 MB) llama al HidServ.dll vía window messages (msg `0x40D`).
-
-## Capacidades observadas del teclado (2026-08-23)
-
-Erik reportó lo siguiente contra el teclado físico + driver oficial. Esto define **qué tiene que poder hacer el plugin** y **qué buscar en el RE**.
-
-### 1. Per-key RGB con color mixing completo
-> "las luces se combinan entre sí incluso formando un rango amplio de colores"
-
-→ Cada key tiene su propio LED con R, G, B independientes. No es por zonas. **Podemos pintar cualquier key de cualquier color**, y el teclado hace el blending internamente.
-
-### 2. Efectos fluidos sin lag
-> "los efectos son fluidos, no se sienten lageados"
-
-→ El MCU del teclado interpola / anima a alta frecuencia. Esto sugiere que el driver probablemente **envía comandos de efecto** (no frames raw a 60fps). El teclado corre la animación en hardware.
-
-⚠️ Implicación para el plugin: puede haber dos modos en el protocolo:
-- **Modo "raw frame"**: el host manda pixeles R,G,B por key cada frame (lo que necesita SignalRGB).
-- **Modo "effect command"**: el host manda "ejecuta efecto X con params Y" y el teclado anima localmente.
-
-El RE debe capturar ambos modos si existen.
-
-### 3. Detección de velocidad de tipeo
-> "detecta la velocidad a la que escribo y acelera la animación"
-
-→ El teclado reporta eventos de key press al host (vía HID input reports en la interfaz standard de Keyboard). Eso significa que **podemos leer las teclas que se presionan** desde nuestro plugin y:
-- Contar el WPM / KPM.
-- Acelerar efectos en función de la velocidad de tipeo.
-- Disparar animaciones reactivas al tecleo (este es el effect `typing_reactive` que ya está implementado en `effects/typing_reactive.js`).
-
-### 4. Animaciones triggered por posición de tecla
-> "es capaz de animar dependiendo del toque de la tecla, iluminando letras individuales o realizando animaciones al presionar un área, así que sabe desde donde crear la animación"
-
-→ El teclado conoce **qué key se presionó** (HID usage ID) y puede:
-- Encender solo esa key.
-- Iniciar una animación que se propaga desde esa key.
-
-Esto lo hace probablemente en el MCU. Para nuestro plugin, la traducción es:
-- Leemos el HID input report.
-- Identificamos la key por su usage ID.
-- Disparamos el effect en la posición correspondiente de nuestro framebuffer.
-
-⚠️ Implicación: **necesitamos dos canales HID abiertos**:
-1. **OUT al canal RGB (FF1C:0092)** — mandar comandos/pixeles al teclado.
-2. **IN desde el canal de Keyboard input (Usage Page 0x07)** — leer qué teclas se presionan.
-
-## Estructura probable del paquete HID (hipótesis)
-
-Basado en el patrón típico de teclados RGB HID Vendor Defined (similar a Sinowealth 258a:0049 que usa el Redragon KS82B):
+Mirando el contenido de los comandos "tipo B" (RGB data):
 
 ```
-Byte 0    : Report ID (típicamente 0x00 o 0x01)
-Byte 1    : Comando (set color, set effect, save, etc.)
-Byte 2    : Sub-comando / modo / zona
-Byte 3    : Cantidad de keys o parámetro
-Byte 4..N : Datos (RGB por key, parámetros del efecto)
+04 22 12 11 36 00 00 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 00 
+FF 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 00 
+FF 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 00 FF 00 FF 
+FB F0 00 FF
 ```
 
-> ⚠️ **Esto es hipótesis**, no confirmado. La captura lo va a develar.
+**Patrón `FF 00 00` repetido 16 veces** después del header. Esto es muy probablemente **16 LEDs/keys con color rojo (R=255, G=0, B=0) en formato packed**.
 
-## Comandos a descubrir (checklist)
+Otra variante vista (`04 17 ...`):
+```
+... 00 00 FF 00 00 00 FF FF 00 FF FF 00 FF FF 00 ...
+```
+Patrón distinto: pares de bytes `FF 00` / `00 00` / `FF FF` — probablemente **brightness por zona** (no RGB triplets).
 
-### Modo raw frame (esenciales para SignalRGB)
-- [ ] Set color por key individual (1 key)
-- [ ] Set color por key individual con key ID (las 104 keys enumeradas)
-- [ ] Set all keys a un color (broadcast)
-- [ ] Header / framing (cantidad de keys por paquete, padding, etc.)
+**Conclusión:** El formato de los datos RGB aún no está 100% claro. Necesitamos capturas individuales (1 acción por captura) para mapear correctamente.
 
-### Modo effect command (lo que probablemente usa el driver oficial)
-- [ ] Effect: static
-- [ ] Effect: breathing (con color y velocidad)
-- [ ] Effect: wave (con colores y velocidad)
-- [ ] Effect: rainbow
-- [ ] Effect: reactive / typing-triggered
-- [ ] Effect: ripple from key press
-- [ ] Brightness / speed / direction
+---
 
-### Configuración
-- [ ] Brightness (0–100%)
-- [ ] Save to on-board memory
-- [ ] Restore defaults
-- [ ] Protocol version / handshake
-- [ ] LED on/off global
+## 🟡 Lo que está PARCIALMENTE confirmado
 
-### HID Input Reports (key press detection)
-- [ ] ¿El driver del KX-500 expone los keypress events en algún Usage Page custom, o solo en el Usage Page estándar 0x07?
-- [ ] ¿Hay algún campo extra (presión / force) en los reports?
+### Capacidades del KX-500 (confirmadas por Erik)
 
-## Referencias
+Erik reportó el 2026-08-26:
 
-- [`kn4oqw-clint/redragon-ks82b-rgb`](https://github.com/kn4oqw-clint/redragon-ks82b-rgb) — Python per-key para Sinowealth 258a:0049 (estructura similar).
+> - ✅ Cambio de color per-key con color picker arbitrario (RGB completo, no colores fijos)
+> - ✅ Efectos multicolores fluidos (mezclan colores suavemente en tiempo real)
+> - ✅ Prende en magenta, violeta, cyan, cualquier color del picker
+> - ✅ Efectos arcoiris con desvanecido
+
+→ **El KX-500 ES RGB programable** (mi análisis previo del packed data era incorrecto por la captura mixta).
+
+### USB Audio IN (endpoint 0x82, 64 bytes)
+
+Capturamos transferencias periódicas (~16ms, ~60Hz) en endpoint 0x82 IN desde device 2. Probablemente:
+- Micrófono pasante (algunos teclados gaming lo traen)
+- O audio output pasante (headphone jack)
+
+→ **No relacionado con RGB**, ignorar para el plugin.
+
+---
+
+## 🔴 Lo que FALTA confirmar (necesita capturas individuales)
+
+Erik va a hacer capturas individuales de cada acción:
+
+| # | Acción | Nombre sugerido |
+|---|---|---|
+| 1 | Color sólido (un color para todo el teclado) | `01_solid_color.pcapng` |
+| 2 | Cambio de un único color (key individual) | `02_per_key_single.pcapng` |
+| 3 | Brightness up/down | `03_brightness.pcapng` |
+| 4 | Efecto breathing | `04_breathing.pcapng` |
+| 5 | Efecto wave/rainbow | `05_wave.pcapng` |
+| 6 | Velocidad de efecto | `06_speed.pcapng` |
+| 7 | Apagar LEDs | `07_off.pcapng` |
+| 8 | Re-encender LEDs | `08_on.pcapng` |
+| 9 | Restore defaults | `09_defaults.pcapng` |
+| 10 | Cambiar entre perfiles | `10_profile_switch.pcapng` |
+
+Guardar en `dev/captures/`. El script `inspect_rgb_hex.ps1` los analiza automáticamente.
+
+### Preguntas abiertas
+
+1. **¿Cuántas zonas RGB tiene realmente el KX-500?**
+   - Handshake sugiere 19 IDs (con gap)
+   - RGB data sugiere 16 triplets (packed RGB)
+   - Erik reporta per-key arbitrary → ¿driver hace blending interno?
+
+2. **¿Cuál es el comando exacto para "set solid color"?**
+   - Captura mixta tenía `04 22 12 11 36 ...` con `FF 00 00 × 16` → probable
+   - Pero podría ser `04 22 13 11 36 ...` o similar para otros colores
+
+3. **¿Hay un comando "set brightness"?**
+   - No identificado claro en captura mixta
+   - Probablemente uno de los "tipo A" (header `04 CMD XX 11 03 XX 00 00 8`)
+
+4. **¿Cómo se apagan los LEDs?**
+   - Probablemente `04 22 00 11 36 00 00 00 00 00 00 00 ...` (todos en 0)
+   - O un comando dedicado `04 XX 00 ...`
+
+5. **¿Hay frame para cada "render" o solo cuando cambia el estado?**
+   - Si solo cambia → SignalRGB debe detectar cambios y mandar solo cuando hay diff
+   - Si cada frame → SignalRGB debe mandar continuamente
+
+---
+
+## 🛠️ Implementación actual del plugin (v0.2.0-dev)
+
+**Versión Lite actual** (`KX500_Lite.js`):
+
+✅ **Correcto:**
+- VID/PID (`0x320F`/`0x5008`)
+- Layout de 104 keys
+- Validate() con interface + usage_page (aunque el canal real es "Mouse" HID, mantenemos el fallback FF1C:0092 por compatibilidad)
+
+🔄 **Mejorado en esta versión:**
+- `send_report` → **`device.write`** (output report, lo que realmente usa el driver)
+- 520 bytes → **64 bytes** (tamaño real del paquete)
+- Header `06 08 00 00 01 00 7A 01` → **Report ID 0x04 + comando**
+- Sin heartbeat → **wrapper START/END** alrededor de cada comando
+- 1 comando best-guess → **múltiples comandos organizados por familia**
+
+⚠️ **Limitaciones conocidas:**
+- Sin captura individual por acción, los comandos exactos son **best-guess**
+- El plugin intentará los comandos más probables basados en patrones vistos
+- Erik debe iterar con las capturas individuales para refinar
+
+---
+
+## 📂 Archivos del RE
+
+```
+dev/captures/
+├── teclado_captura_mixta.pcapng       # captura inicial (mezcla de acciones)
+├── extract_rgb_packets.ps1            # extraer paquetes HID RGB del pcap
+├── inspect_basico.ps1                 # tshark básico
+├── inspect_deep.ps1                   # tshark deep: tipos transferencia
+├── inspect_interrupts.ps1             # tshark: setup packets + interrupts
+├── inspect_rgb_hex.ps1                # extraer HID Data en hex formateado
+├── inspect_rgb_out.ps1                # paquetes OUT con -x raw hex
+├── inspect_descriptors.ps1            # descriptores USB/HID
+├── kx500_analyze_pcap.py              # parser pcap/pcapng standalone
+├── 01_solid_color.pcapng              # (pendiente Erik)
+├── 02_per_key_single.pcapng           # (pendiente Erik)
+└── ...                                # más capturas individuales pendientes
+```
+
+---
+
+## 🔗 Referencias
+
+- [`kn4oqw-clint/redragon-ks82b-rgb`](https://github.com/kn4oqw-clint/redragon-ks82b-rgb) — Sinowealth 258a:0049, útil para entender patrones HID.
 - [`MRtojisan/portronics-hydra-10-SignalRGB-Plugin`](https://github.com/MRtojisan/portronics-hydra-10-SignalRGB-Plugin) — plantilla de plugin SignalRGB.
+- USBPcap: https://desowin.org/usbpcap/
+- Wireshark USB HID docs: https://wiki.wireshark.org/USB
+
+---
+
+## 📋 Checklist de avance
+
+### Capturas individuales
+- [ ] `01_solid_color.pcapng` — color único para todo el teclado
+- [ ] `02_per_key_single.pcapng` — cambiar una sola key
+- [ ] `03_brightness.pcapng` — subir/bajar brillo
+- [ ] `04_breathing.pcapng` — efecto breathing
+- [ ] `05_wave.pcapng` — efecto wave
+- [ ] `06_speed.pcapng` — cambiar velocidad
+- [ ] `07_off.pcapng` — apagar LEDs
+- [ ] `08_on.pcapng` — encender LEDs
+- [ ] `09_defaults.pcapng` — restore defaults
+
+### Implementación plugin
+- [x] HID transport: output reports, 64 bytes, Report ID 0x04
+- [x] Heartbeat wrapper START/END
+- [x] Handshake packet on Initialize
+- [x] Solid color command (best-guess)
+- [x] Per-zone color (best-guess)
+- [x] Brightness control (best-guess)
+- [x] Shutdown packet (todos 0)
+- [ ] Per-key precise color mapping (depende de capturas individuales)
+- [ ] Reactive al typing (lee endpoint 0x81 IN)
+
+### Plugin v0.3.0+ (futuro)
+- [ ] Detección automática de protocolo (probe al Initialize)
+- [ ] Soporte para efectos nativos del KX-500 (breathing, wave, etc.)
+- [ ] Reactive typing con detección de WPM
+- [ ] Profile persistence (guardar config en memoria del teclado)

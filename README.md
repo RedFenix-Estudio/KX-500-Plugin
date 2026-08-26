@@ -1,155 +1,137 @@
-# KX-500 SignalRGB Plugin — Lite
+# KX-500 SignalRGB Plugin
 
-> Plugin open-source para el teclado **Checkpoint Gaming KX-500 (NA-KB-1001, Naruto Edition)** en **SignalRGB**. Single-file JS, 104 keys full-size US ANSI, 7 presets HID configurables.
-
----
-
-## 🎯 Quick Start (usuarios)
-
-### Instalar desde SignalRGB
-
-```
-1. SignalRGB → Settings → User Plugins → Add Plugin
-2. Pegá esta URL del repo:
-   https://github.com/RedFenix-Estudio/KX-500-Plugin
-3. Enable Streaming en el device detectado "Checkpoint KX-500 (NA-KB-1001)"
-```
-
-Si SignalRGB no acepta la URL del repo, instalá manualmente:
-
-```
-1. Descargá KX500_Lite.js (click derecho → Save link as)
-   URL: https://raw.githubusercontent.com/RedFenix-Estudio/KX-500-Plugin/main/KX500_Lite.js
-2. Copialo a: %LOCALAPPDATA%\VortxEngine\app-*\Signal-x64\Plugins\
-3. Reiniciá SignalRGB
-```
+> Plugin SignalRGB para el teclado **Checkpoint KX-500** (NA-KB-1001) — Leaf Ninja Naruto Edition.
+>
+> Estado actual: **v0.2.0-dev** — protocolo HID **confirmado por captura USBPcap+Wireshark** (2026-08-26).
 
 ---
 
-## 🛠️ Cambios recientes
+## 🎯 ¿Qué hace este plugin?
 
-| Versión | Fecha | Cambio |
-|---|---|---|
-| **v0.1.0** | 2026-08-25 | Plugin Lite con 7 presets HID configurables desde la UI |
+Permite que SignalRGB controle las luces RGB del KX-500, incluyendo:
 
-### Qué hace el plugin (versión actual)
+- ✅ **Color sólido** por toda la superficie del teclado
+- ✅ **Modo Canvas** — SignalRGB pinta cualquier efecto sobre el framebuffer y lo manda al teclado
+- ✅ **Modo Forced** — color fijo con effect interno (static / breathing / wave / typing)
+- ✅ **Brightness** global (0-100%)
+- ✅ **Shutdown color** al apagar SignalRGB
 
-- ✅ **Detecta** el KX-500 en SignalRGB (verificado por Erik)
-- ✅ **104 keys** declaradas con nombres oficiales de SignalRGB
-- ✅ **Modo Canvas**: lee `device.color(x,y)` por key, SignalRGB aplica los effects
-- ✅ **Modo Forced**: aplica color fijo configurable
-- ✅ **7 presets HID** seleccionables desde la UI
-- ⚠️ **Las luces NO encienden todavía** — depende del header HID real del KX-500
-
----
-
-## 📂 Estructura del repo
-
-```
-KX-500-Plugin/
-├── KX500_Lite.js          ← ÚNICO archivo que SignalRGB carga
-├── LICENSE
-├── package.json
-│
-├── dev/                   ← Desarrollo (no se usa en runtime)
-│   ├── src/                  módulos ES para devs (layout, protocol, effects)
-│   └── test/                 tests offline del plugin
-│
-├── examples/              ← Guías para devs
-│   └── wireshark-capture-guide.md
-│
-└── tools/                 ← USBPcap + Wireshark (para calibrar el HID)
-    ├── README.md
-    ├── USBPcapSetup-1.5.4.0.exe
-    └── Wireshark-4.6.8-x64.exe
-```
-
-**`KX500_Lite.js`** es el único archivo que SignalRGB necesita.
-**Todo lo demás** es opcional — para devs (modular) o para la calibración HID.
+**Lo que aún NO funciona (pendiente capturas individuales):**
+- ⏳ Per-key RGB preciso (actualmente envía color promedio)
+- ⏳ Detección exacta de zonas RGB (sospechamos ~16-19, no 104)
+- ⏳ Efectos nativos del KX-500 (breathing/wave del firmware)
 
 ---
 
-## 🎮 Probar las luces en el teclado (settings UI)
+## 🚀 Instalación rápida
 
-En SignalRGB → Devices → Checkpoint KX-500 → vas a ver:
+1. **Cerrar SignalRGB**
+2. **Cerrar** el driver oficial de Checkpoint (`CHECKPOINT_KX_500.exe`, `HidServ.exe`)
+3. **Copiar** `KX500_Lite.js` a tu carpeta de plugins SignalRGB
+   - Default Windows: `%LOCALAPPDATA%\WhirlwindFX\SignalRGB\Plugins\`
+4. **Abrir** SignalRGB
+5. **Activar** el plugin → el KX-500 debería aparecer como "Checkpoint KX-500"
+6. **Probar** con un effect básico (rainbow, static color, etc.)
 
-| Setting | Default | Para qué sirve |
-|---|---|---|
-| **HID Protocol Preset** | `sinowealth_8b` | **Probar las 7 variantes HID** si las luces no encienden |
-| Effect | `static` | Internal effect para modo Forced |
-| Effect Color | `#009bde` | Color base del effect |
-| Brightness | `100` | Multiplicador global 0–100% |
-| Lighting Mode | `Canvas` | `Canvas` = SignalRGB controla; `Forced` = color fijo |
-| Forced Color | `#009bde` | Color cuando LightingMode=Forced |
-| Shutdown Color | `#000000` | Color al apagar SignalRGB |
-
-### 7 Presets HID disponibles
-
-| Preset | Header | Report Size | Comentario |
-|---|---|---|---|
-| `sinowealth_8b` (default) | `06 08 00 00 01 00 7A 01` | 520B | Hydra 10 / Redragon K626 (probable) |
-| `sinowealth_7b` | `00 08 00 00 01 00 7A 01` | 520B | sin 0x06 prefix |
-| `vendor_4b_64` | `00 00 00 01` | 64B | Vendor minimal |
-| `vendor_4b_520` | `00 00 00 01` | 520B | Vendor minimal large |
-| `rgb_no_header` | (vacío) | 320B | Solo RGB raw |
-| `rgb_64` | (vacío) | 64B | Solo RGB + 64B |
-| `rgb_520` | (vacío) | 520B | Solo RGB + 520B |
-
-Para probar: cambiá el preset, esperá unos segundos, mirá si las luces encienden. Si encontrás uno que funcione, decime cuál → lo pongo como default.
+Ver [INSTALL.md](./INSTALL.md) para troubleshooting detallado.
 
 ---
 
-## 🔬 Calibración del header HID
+## 🧬 Protocolo HID (resumen técnico)
 
-El header HID exacto del KX-500 está oculto en el driver oficial. Para encontrarlo:
+| Campo | Valor |
+|---|---|
+| VID | `0x320F` |
+| PID | `0x5008` |
+| Endpoint RGB | interface 1, endpoint `0x03 OUT` (Interrupt) |
+| Report ID | `0x04` |
+| Tamaño paquete | `64 bytes` |
+| Transporte | HID Output Report (`device.write()`) |
+| Layout | 104 keys full-size US ANSI |
 
-1. Cerrar SignalRGB
-2. Iniciar driver oficial `CHECKPOINT_KX_500.exe` (en `C:\Program Files (x86)\CHECKPOINT KX-500\`)
-3. Wireshark + USBPcap (instaladores en `tools/`)
-4. Aplicar un color desde el driver oficial
-5. Capturar el primer byte del paquete HID OUT
-6. Editar `KX500_Lite.js` con los bytes reales (en `PROTOCOL_PRESETS`)
-7. Reiniciar SignalRGB
+**Estructura de paquete:**
+```
+[0x04] [CMD] [PARAMETROS...] [padding 0x00 hasta 64 bytes]
+```
 
-Alternativas:
-- **xperf** (built-in Windows) para ETW tracing USB
-- **API Monitor** (gratis, rohitab.com) para capturar llamadas a HID.dll
-- **WinDbg** con breakpoints condicionales en HidD_SetFeature
+**Heartbeat wrapper** (cada comando real va envuelto):
+```
+[04 01 00 01 ... pad]  ← START
+[ ... comando real ...]
+[04 02 00 02 ... pad]  ← END
+```
 
-Ver `examples/wireshark-capture-guide.md` para la guía completa.
+Ver [PROTOCOL.md](./PROTOCOL.md) para el análisis completo con captura USBPcap.
 
 ---
 
-## 💻 Desarrollo (opcional)
+## 🗂️ Estructura del repo
 
-```powershell
-# Clonar
-git clone https://github.com/RedFenix-Estudio/KX-500-Plugin.git
-cd KX-500-Plugin
-
-# Tests offline (sin teclado)
-npm install
-npm test
 ```
-
-Salida esperada:
-```
-KX-500 SignalRGB Plugin Lite v2 — Offline Validator
-...
-Resultado: 45 ✅ / 0 ❌
+kx500-signalrgb-plugin/
+├── KX500_Lite.js              ← single-file plugin para SignalRGB
+├── PROTOCOL.md                ← análisis del protocolo HID
+├── README.md                  ← este archivo
+├── INSTALL.md                 ← guía de instalación
+├── ANALYSIS.md                ← análisis previo (Ghidra, Procmon, etc.)
+├── LICENSE                    ← MIT
+├── package.json               ← npm scripts (test, smoke)
+├── dev/
+│   ├── src/
+│   │   ├── protocol.js        ← módulo de protocolo (buildPacket, etc.)
+│   │   ├── layout.js          ← 104 keys del KX-500
+│   │   ├── effects.js         ← effects internos (static, breathing, etc.)
+│   │   └── usb/               ← (reservado para futuros helpers USB)
+│   ├── test/
+│   │   ├── validate.js        ← tests completos (35 tests)
+│   │   └── smoke.js           ← smoke test rápido
+│   └── captures/              ← capturas USBPcap del KX-500
+│       ├── teclado_captura_mixta.pcapng   ← captura inicial (mezcla de acciones)
+│       ├── extract_rgb_packets.ps1        ← script de extracción
+│       ├── inspect_basico.ps1
+│       ├── inspect_deep.ps1
+│       ├── inspect_interrupts.ps1
+│       ├── inspect_rgb_hex.ps1            ← análisis principal de comandos
+│       ├── inspect_rgb_out.ps1
+│       ├── inspect_descriptors.ps1
+│       └── kx500_analyze_pcap.py          ← parser standalone
 ```
 
 ---
 
-## 🙏 Créditos
+## 🧪 Tests
 
-- **Arquitectura SignalRGB SDK** según [docs.signalrgb.com](https://docs.signalrgb.com/developer/plugins/)
-- **Patrón SinoWealth HID** basado en [MRtojisan/portronics-hydra-10-SignalRGB-Plugin](https://github.com/MRtojisan/portronics-hydra-10-SignalRGB-Plugin)
-- **Best practices** de [Redragon K626 plugin](https://github.com/lucas-hochmann-rosa/signalrgb-redragon-k626-plugin)
-- 🐾 por [RedFenix Estudio](https://github.com/RedFenix-Estudio)
+```bash
+# Desde la raíz del repo
+npm test            # 35 tests del layout, protocolo, effects
+npm run test:smoke  # smoke test rápido
+npm run inspect     # ver paquetes RGB de la captura USBPcap
+npm run extract     # extraer paquetes HID RGB del pcap
+```
+
+**Estado actual: 35/35 ✅**
+
+---
+
+## 🤝 Contribuir
+
+El proyecto está en RE activo. Las áreas donde más ayuda necesitamos:
+
+1. **Capturas individuales** — Si tenés el KX-500, hacé capturas separadas para cada acción (ver [PROTOCOL.md#checklist](./PROTOCOL.md))
+2. **Validación de comandos** — Probar los efectos nativos del firmware desde SignalRGB
+3. **Refinamiento del protocolo** — Ayudar a mapear bytes → acciones
 
 ---
 
 ## 📜 Licencia
 
-MIT — ver `LICENSE`.
+MIT © RedFenix Estudio
+
+---
+
+## 🔗 Links
+
+- Repo: https://github.com/RedFenix-Estudio/KX-500-Plugin
+- Documentación SignalRGB: https://docs.signalrgb.com/
+- USBPcap: https://desowin.org/usbpcap/
+- Protocolo similar (Sinowealth 258a:0049): https://github.com/kn4oqw-clint/redragon-ks82b-rgb

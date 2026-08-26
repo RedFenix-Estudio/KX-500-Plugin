@@ -1,131 +1,127 @@
 /**
- * KX-500 Full-Size US ANSI 104-Key Layout
- * ─────────────────────────────────────────────────────────────────
- * Devuelve los nombres y posiciones de las 104 keys del teclado
- * Checkpoint KX-500 Naruto Edition (NA-KB-1001), full-size US English.
+ * KX-500 Layout — 104 keys full-size US ANSI
  *
- * Coordenadas (x, y):
- *   - x = columna en el bounding box del layout (cada unidad = 1 slot)
- *   - y = fila desde arriba (0 = function row, 5 = space row)
- *   - Los nombres siguen la lista oficial de SignalRGB para keypress effects.
+ * Layout estándar full-size con numpad, F-row, navigation cluster, Win/Fn/Menu.
+ * Bounding box: 23 cols × 6 filas.
  *
- * Esta función es la única fuente de verdad para el layout. Si Erik cambia
- * de teclado (TKL, ISO, etc.), solo hay que tocar esto.
+ * Re-exportado desde KX500_Lite.js (single source of truth).
  */
 
 'use strict';
 
-// Genera el layout 104 keys. Devuelve { size, ledNames, ledPositions }.
-// Las posiciones se calculan en unidades (1u) sobre un bounding box de
-// 23 columnas × 6 filas (full-size US ANSI con numpad).
-function buildLayout() {
-    const k = (name, x, y, w = 1, h = 1) => ({ name, x, y, w, h });
+// Keys del KX-500 en orden físico (F0 → Space → Arrow → Numpad)
+// Cada key: { name, x, y, w, h } en unidades (1u = 1 slot)
+export const KX500_KEYS = [
+    // Fila 0: Function row (Esc + F1-F12 + Print Screen + Scroll Lock + Pause)
+    { name: 'Esc', x: 0, y: 0, w: 1, h: 1 },
+    { name: 'F1', x: 2, y: 0, w: 1, h: 1 }, { name: 'F2', x: 3, y: 0, w: 1, h: 1 },
+    { name: 'F3', x: 4, y: 0, w: 1, h: 1 }, { name: 'F4', x: 5, y: 0, w: 1, h: 1 },
+    { name: 'F5', x: 6.5, y: 0, w: 1, h: 1 }, { name: 'F6', x: 7.5, y: 0, w: 1, h: 1 },
+    { name: 'F7', x: 8.5, y: 0, w: 1, h: 1 }, { name: 'F8', x: 9.5, y: 0, w: 1, h: 1 },
+    { name: 'F9', x: 11, y: 0, w: 1, h: 1 }, { name: 'F10', x: 12, y: 0, w: 1, h: 1 },
+    { name: 'F11', x: 13, y: 0, w: 1, h: 1 }, { name: 'F12', x: 14, y: 0, w: 1, h: 1 },
+    { name: 'Print Screen', x: 15.5, y: 0, w: 1, h: 1 },
+    { name: 'Scroll Lock', x: 16.5, y: 0, w: 1, h: 1 },
+    { name: 'Pause Break', x: 17.5, y: 0, w: 1, h: 1 },
 
-    const keys = [
-        // ───── Fila 0: Function row ─────
-        k('Esc', 0, 0),
-        k('F1', 2, 0), k('F2', 3, 0), k('F3', 4, 0), k('F4', 5, 0),
-        k('F5', 6.5, 0), k('F6', 7.5, 0), k('F7', 8.5, 0), k('F8', 9.5, 0),
-        k('F9', 11, 0), k('F10', 12, 0), k('F11', 13, 0), k('F12', 14, 0),
-        k('Print Screen', 15.5, 0), k('Scroll Lock', 16.5, 0), k('Pause Break', 17.5, 0),
+    // Fila 1: Number row + nav cluster
+    { name: '`', x: 0, y: 1, w: 1, h: 1 },
+    { name: '1', x: 1, y: 1, w: 1, h: 1 }, { name: '2', x: 2, y: 1, w: 1, h: 1 },
+    { name: '3', x: 3, y: 1, w: 1, h: 1 }, { name: '4', x: 4, y: 1, w: 1, h: 1 },
+    { name: '5', x: 5, y: 1, w: 1, h: 1 }, { name: '6', x: 6, y: 1, w: 1, h: 1 },
+    { name: '7', x: 7, y: 1, w: 1, h: 1 }, { name: '8', x: 8, y: 1, w: 1, h: 1 },
+    { name: '9', x: 9, y: 1, w: 1, h: 1 }, { name: '0', x: 10, y: 1, w: 1, h: 1 },
+    { name: '-', x: 11, y: 1, w: 1, h: 1 }, { name: '=', x: 12, y: 1, w: 1, h: 1 },
+    { name: 'Backspace', x: 13, y: 1, w: 2, h: 1 },
+    { name: 'Insert', x: 15.5, y: 1, w: 1, h: 1 },
+    { name: 'Home', x: 16.5, y: 1, w: 1, h: 1 },
+    { name: 'Page Up', x: 17.5, y: 1, w: 1, h: 1 },
 
-        // ───── Fila 1: Number row + nav cluster ─────
-        k('`', 0, 1),
-        k('1', 1, 1), k('2', 2, 1), k('3', 3, 1), k('4', 4, 1),
-        k('5', 5, 1), k('6', 6, 1), k('7', 7, 1), k('8', 8, 1),
-        k('9', 9, 1), k('0', 10, 1),
-        k('-', 11, 1), k('=', 12, 1),
-        k('Backspace', 13, 1, 2),
-        k('Insert', 15.5, 1), k('Home', 16.5, 1), k('Page Up', 17.5, 1),
+    // Fila 2: QWERTY
+    { name: 'Tab', x: 0, y: 2, w: 1.5, h: 1 },
+    { name: 'Q', x: 1.5, y: 2, w: 1, h: 1 }, { name: 'W', x: 2.5, y: 2, w: 1, h: 1 },
+    { name: 'E', x: 3.5, y: 2, w: 1, h: 1 }, { name: 'R', x: 4.5, y: 2, w: 1, h: 1 },
+    { name: 'T', x: 5.5, y: 2, w: 1, h: 1 }, { name: 'Y', x: 6.5, y: 2, w: 1, h: 1 },
+    { name: 'U', x: 7.5, y: 2, w: 1, h: 1 }, { name: 'I', x: 8.5, y: 2, w: 1, h: 1 },
+    { name: 'O', x: 9.5, y: 2, w: 1, h: 1 }, { name: 'P', x: 10.5, y: 2, w: 1, h: 1 },
+    { name: '[', x: 11.5, y: 2, w: 1, h: 1 }, { name: ']', x: 12.5, y: 2, w: 1, h: 1 },
+    { name: '\\', x: 13.5, y: 2, w: 1.5, h: 1 },
+    { name: 'Del', x: 15.5, y: 2, w: 1, h: 1 },
+    { name: 'End', x: 16.5, y: 2, w: 1, h: 1 },
+    { name: 'Page Down', x: 17.5, y: 2, w: 1, h: 1 },
 
-        // ───── Fila 2: QWERTY + nav cluster ─────
-        k('Tab', 0, 2, 1.5),
-        k('Q', 1.5, 2), k('W', 2.5, 2), k('E', 3.5, 2), k('R', 4.5, 2),
-        k('T', 5.5, 2), k('Y', 6.5, 2), k('U', 7.5, 2), k('I', 8.5, 2),
-        k('O', 9.5, 2), k('P', 10.5, 2),
-        k('[', 11.5, 2), k(']', 12.5, 2),
-        k('\\', 13.5, 2, 1.5),
-        k('Del', 15.5, 2), k('End', 16.5, 2), k('Page Down', 17.5, 2),
+    // Fila 3: Home row
+    { name: 'Caps Lock', x: 0, y: 3, w: 1.75, h: 1 },
+    { name: 'A', x: 1.75, y: 3, w: 1, h: 1 }, { name: 'S', x: 2.75, y: 3, w: 1, h: 1 },
+    { name: 'D', x: 3.75, y: 3, w: 1, h: 1 }, { name: 'F', x: 4.75, y: 3, w: 1, h: 1 },
+    { name: 'G', x: 5.75, y: 3, w: 1, h: 1 }, { name: 'H', x: 6.75, y: 3, w: 1, h: 1 },
+    { name: 'J', x: 7.75, y: 3, w: 1, h: 1 }, { name: 'K', x: 8.75, y: 3, w: 1, h: 1 },
+    { name: 'L', x: 9.75, y: 3, w: 1, h: 1 },
+    { name: ';', x: 10.75, y: 3, w: 1, h: 1 }, { name: '\u2019', x: 11.75, y: 3, w: 1, h: 1 },
+    { name: 'Enter', x: 12.75, y: 3, w: 2.25, h: 1 },
 
-        // ───── Fila 3: Home row ─────
-        k('Caps Lock', 0, 3, 1.75),
-        k('A', 1.75, 3), k('S', 2.75, 3), k('D', 3.75, 3), k('F', 4.75, 3),
-        k('G', 5.75, 3), k('H', 6.75, 3), k('J', 7.75, 3), k('K', 8.75, 3),
-        k('L', 9.75, 3),
-        k(';', 10.75, 3), k('’', 11.75, 3),
-        k('Enter', 12.75, 3, 2.25),
+    // Fila 4: Bottom row
+    { name: 'Left Shift', x: 0, y: 4, w: 2.25, h: 1 },
+    { name: 'Z', x: 2.25, y: 4, w: 1, h: 1 }, { name: 'X', x: 3.25, y: 4, w: 1, h: 1 },
+    { name: 'C', x: 4.25, y: 4, w: 1, h: 1 }, { name: 'V', x: 5.25, y: 4, w: 1, h: 1 },
+    { name: 'B', x: 6.25, y: 4, w: 1, h: 1 }, { name: 'N', x: 7.25, y: 4, w: 1, h: 1 },
+    { name: 'M', x: 8.25, y: 4, w: 1, h: 1 },
+    { name: ',', x: 9.25, y: 4, w: 1, h: 1 }, { name: '.', x: 10.25, y: 4, w: 1, h: 1 },
+    { name: '/', x: 11.25, y: 4, w: 1, h: 1 },
+    { name: 'Right Shift', x: 12.25, y: 4, w: 2.75, h: 1 },
+    { name: 'Up Arrow', x: 16.5, y: 4, w: 1, h: 1 },
 
-        // ───── Fila 4: Bottom row ─────
-        k('Left Shift', 0, 4, 2.25),
-        k('Z', 2.25, 4), k('X', 3.25, 4), k('C', 4.25, 4), k('V', 5.25, 4),
-        k('B', 6.25, 4), k('N', 7.25, 4), k('M', 8.25, 4),
-        k(',', 9.25, 4), k('.', 10.25, 4), k('/', 11.25, 4),
-        k('Right Shift', 12.25, 4, 2.75),
-        k('Up Arrow', 16.5, 4),
+    // Fila 5: Space row
+    { name: 'Left Ctrl', x: 0, y: 5, w: 1.25, h: 1 },
+    { name: 'Left Win', x: 1.25, y: 5, w: 1.25, h: 1 },
+    { name: 'Left Alt', x: 2.5, y: 5, w: 1.25, h: 1 },
+    { name: 'Space', x: 3.75, y: 5, w: 6.25, h: 1 },
+    { name: 'Right Alt', x: 10, y: 5, w: 1.25, h: 1 },
+    { name: 'Fn', x: 11.25, y: 5, w: 1.25, h: 1 },
+    { name: 'Menu', x: 12.5, y: 5, w: 1.25, h: 1 },
+    { name: 'Right Ctrl', x: 13.75, y: 5, w: 1.25, h: 1 },
+    { name: 'Left Arrow', x: 15.5, y: 5, w: 1, h: 1 },
+    { name: 'Down Arrow', x: 16.5, y: 5, w: 1, h: 1 },
+    { name: 'Right Arrow', x: 17.5, y: 5, w: 1, h: 1 },
 
-        // ───── Fila 5: Space row ─────
-        k('Left Ctrl', 0, 5, 1.25),
-        k('Left Win', 1.25, 5, 1.25),
-        k('Left Alt', 2.5, 5, 1.25),
-        k('Space', 3.75, 5, 6.25),
-        k('Right Alt', 10, 5, 1.25),
-        k('Fn', 11.25, 5, 1.25),
-        k('Menu', 12.5, 5, 1.25),
-        k('Right Ctrl', 13.75, 5, 1.25),
-        k('Left Arrow', 15.5, 5), k('Down Arrow', 16.5, 5), k('Right Arrow', 17.5, 5),
+    // Numpad
+    { name: 'NumLock', x: 19, y: 1, w: 1, h: 1 },
+    { name: 'Num /', x: 20, y: 1, w: 1, h: 1 },
+    { name: 'Num *', x: 21, y: 1, w: 1, h: 1 },
+    { name: 'Num -', x: 22, y: 1, w: 1, h: 1 },
+    { name: 'Num 7', x: 19, y: 2, w: 1, h: 1 },
+    { name: 'Num 8', x: 20, y: 2, w: 1, h: 1 },
+    { name: 'Num 9', x: 21, y: 2, w: 1, h: 1 },
+    { name: 'Num +', x: 22, y: 2, w: 1, h: 2 },
+    { name: 'Num 4', x: 19, y: 3, w: 1, h: 1 },
+    { name: 'Num 5', x: 20, y: 3, w: 1, h: 1 },
+    { name: 'Num 6', x: 21, y: 3, w: 1, h: 1 },
+    { name: 'Num 1', x: 19, y: 4, w: 1, h: 1 },
+    { name: 'Num 2', x: 20, y: 4, w: 1, h: 1 },
+    { name: 'Num 3', x: 21, y: 4, w: 1, h: 1 },
+    { name: 'Num Enter', x: 22, y: 4, w: 1, h: 2 },
+    { name: 'Num 0', x: 19, y: 5, w: 2, h: 1 },
+    { name: 'Num .', x: 21, y: 5, w: 1, h: 1 },
+];
 
-        // ───── Numpad (4 cols, x=19..22) ─────
-        k('NumLock', 19, 1),
-        k('Num /', 20, 1),
-        k('Num *', 21, 1),
-        k('Num -', 22, 1),
-
-        k('Num 7', 19, 2),
-        k('Num 8', 20, 2),
-        k('Num 9', 21, 2),
-        k('Num +', 22, 2, 1, 2), // double-height
-
-        k('Num 4', 19, 3),
-        k('Num 5', 20, 3),
-        k('Num 6', 21, 3),
-        // Num + continua a y=3
-
-        k('Num 1', 19, 4),
-        k('Num 2', 20, 4),
-        k('Num 3', 21, 4),
-        k('Num Enter', 22, 4, 1, 2), // double-height
-
-        k('Num 0', 19, 5, 2),
-        k('Num .', 21, 5),
-        // Num Enter continua a y=5
-    ];
-
-    // Calcular bounding box (necesario para Size())
+export const LAYOUT_SIZE = (function () {
     let maxX = 0, maxY = 0;
-    for (const key of keys) {
-        if (key.x + key.w > maxX) maxX = key.x + key.w;
-        if (key.y + key.h > maxY) maxY = key.y + key.h;
+    for (const k of KX500_KEYS) {
+        if (k.x + k.w > maxX) maxX = k.x + k.w;
+        if (k.y + k.h > maxY) maxY = k.y + k.h;
     }
-    const size = [Math.ceil(maxX), Math.ceil(maxY)];
+    return [Math.ceil(maxX), Math.ceil(maxY)];
+})();
 
-    // LedNames y LedPositions son paralelos
-    const ledNames = keys.map(k => k.name);
-    const ledPositions = keys.map(k => [k.x, k.y]);
-
-    return { size, ledNames, ledPositions, keys, count: keys.length };
+// Helpers
+export function getKeyByName(name) {
+    return KX500_KEYS.find(k => k.name === name);
 }
 
-/**
- * Devuelve un mapa nombre → key object (con x, y, w, h).
- * Útil para los effects que necesitan coordenadas o dimensiones.
- */
-function buildKeyMap() {
-    const layout = buildLayout();
-    const map = {};
-    for (const key of layout.keys) {
-        map[key.name] = key;
-    }
-    return map;
+export function getKeyIndex(name) {
+    return KX500_KEYS.findIndex(k => k.name === name);
 }
 
-export { buildLayout, buildKeyMap };
+export function getKeyCount() {
+    return KX500_KEYS.length;
+}
