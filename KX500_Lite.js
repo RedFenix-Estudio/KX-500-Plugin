@@ -98,29 +98,22 @@ function buildPacket(seq, cmd, params = []) {
 }
 
 /**
- * Envía una acción envuelta en heartbeat START/END.
+ * Envía una acción (sin heartbeat wrapper).
+ *
+ * v0.6.1: ELIMINADO heartbeat wrapper. El HB_START (64B padded) seguía
+ * causando ERROR_OPERATION_ABORTED en el HID driver. Mandar solo el CMD
+ * directo es más simple y stable.
  *
  * NOTA: device.write() de SignalRGB requiere 2 argumentos: (data, length).
  *
- * Devuelve true si todos los writes fueron exitosos.
+ * Devuelve true si el write fue exitoso.
  */
 function sendAction(seq, cmd, params = []) {
     try {
-        const packet = buildPacket(seq, cmd, params);
-        // v0.5.2 FIX: HB_START y HB_END DEBEN ser de 64 bytes (padded).
-        // Antes eran de 4 bytes lo que causaba desconexión del HID handle
-        // (firmware del KX-500 entra en error state con paquetes cortos).
-        const hbStart = padTo64([RGB_REPORT_ID, 0x01, 0x00, 0x01]);
-        const hbEnd = padTo64([RGB_REPORT_ID, 0x02, 0x00, 0x02]);
-        device.log(`[KX500] write HB_START (${hbStart.length}B)`);
-        device.write(hbStart, hbStart.length);
-        device.pause(20);
+        const packet = buildPacket(seq, cmd, params);  // 64 bytes padded
         device.log(`[KX500] write CMD (${packet.length}B): ${Array.from(packet.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}...`);
         device.write(packet, packet.length);
-        device.pause(20);
-        device.log(`[KX500] write HB_END (${hbEnd.length}B)`);
-        device.write(hbEnd, hbEnd.length);
-        device.pause(20);
+        device.pause(15);
         return true;
     } catch (err) {
         device.log(`[KX500] sendAction error: ${err.message}`);
