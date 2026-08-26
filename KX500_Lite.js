@@ -348,10 +348,29 @@ export function ImageUrl() {
     return "https://raw.githubusercontent.com/RedFenix-Estudio/KX-500-Plugin/main/assets/KX-500.png";
 }
 
+/**
+ * Validate() — matchear el canal Vendor Defined RGB (FF1C:0092).
+ *
+ * El KX-500 expone 5 colecciones HID. El canal RGB está en MI_01 Col04
+ * (collection 0x0004) con Usage Page 0xFF1C (Vendor Defined) y Usage 0x0092.
+ *
+ * Confirmado con SignalRGB SDK enumeration log:
+ *   [IGNORE] endpoint.interface: 1, endpoint.usage: 0x0092,
+ *            endpoint.usage_page: 0xff1c, endpoint.collection: 0x0004
+ *
+ * Sin este match correcto, NO hay HID handle válido y device.write() falla
+ * con "HID handle is invalid".
+ */
 export function Validate(endpoint) {
-    return endpoint.interface === KX500_RGB_INTERFACE
-        && endpoint.usage_page === 0x0001
-        && endpoint.usage === 0x0002;
+    // Match principal: Vendor Defined RGB channel (FF1C:0092)
+    if (endpoint.usage_page === 0xFF1C && endpoint.usage === 0x0092) {
+        return true;
+    }
+    // Fallback: collection 0x0004 (MI_01 Col04)
+    if (endpoint.collection === 0x0004) {
+        return true;
+    }
+    return false;
 }
 
 export function ControllableParameters() {
@@ -435,7 +454,7 @@ export function Initialize() {
 
     // Mandar handshake
     try {
-        device.write(HANDSHAKE);
+        device.write(HANDSHAKE, HANDSHAKE.length);
         device.pause(5);
         device.log(`[KX500] Handshake sent (${HANDSHAKE.length} bytes)`);
     } catch (err) {
@@ -443,11 +462,10 @@ export function Initialize() {
     }
 
     // Apagar LEDs al iniciar
-    try {
-        actionOff();
-        device.log(`[KX500] Initial OFF sent`);
-    } catch (err) {
-        device.log(`[KX500] Initial OFF failed: ${err.message}`);
+    if (sendAction(nextSeq(), 0x00, [0x06, 0x01, 0x01])) {
+        device.log(`[KX500] Initial OFF sent OK`);
+    } else {
+        device.log(`[KX500] Initial OFF FAILED — chequea que Validate() matchee el endpoint RGB (FF1C:0092)`);
     }
 
     device.log(`[KX500] Author: ${AUTHOR}`);
