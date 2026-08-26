@@ -63,8 +63,54 @@ Resumen por familia (ver `dev/captures/inspect_rgb_hex.ps1` para extraer todos):
 | **Heartbeat** | `[04] [01] [00 01]` | `04 01 00 01` | 46x | START frame |
 | **Heartbeat** | `[04] [02] [00 02]` | `04 02 00 02` | 46x | END frame |
 | **Setup corto** | `[04] [CMD] [VAL] [11 03] [XX] [00 00 8]` | `04 0F 01 11 03 7B 00 00 8` | 1-3x | Activar/seleccionar efecto/brightness |
-| **RGB data (tipo B)** | `[04] [CMD] [LEN] [11 36] [00 00 ...] [RGB packed]` | `04 22 12 11 36 00 00 00 00 FF 00 00 ...` | 1x | Set color RGB (packed) |
+| **Single zone set** | `[04] [SEQ] [01] [11 03] [ZONE_ID] [00] [FLAG] [STATE]` | `04 CA 01 11 03 B7 00 00 FF` | 10+ x | Set estado individual de zona |
+| **Bulk zones set** | `[04] [SEQ] [LEN] [11 36] [PARAM] [00] [FLAG] [DATA 56B]` | `04 19 2E 11 36 00 00 00 [packed]` | 7+ x | Set estado de todas las zonas (1B/zone) |
+| **Solid color (single RGB)** | `[04] [SEQ] [03] [06 03 05 00 00 R G B]` | `04 09 03 06 03 05 00 00 00 00 FF` | varios | Set solid color RGB (todos LEDs mismo color) |
+| **Solid color (preestablecido)** | `[04] [SEQ] [01] [11 03] [XX 00] [FLAG]` | `04 13 01 11 03 00 00 00 FF` | 2x | RED — color preestablecido por el driver |
 | **Handshake** | `[04] [A2 03 04 2C 00 00 00 55 AA FF ...]` | `04 A2 03 04 2C 00 00 00 55 AA FF 02 0F 32 08 50 01 01 00 18 00 00 00 00 01 02 ...` | 3x | Inicialización dispositivo |
+
+### 📊 Per-zone (descubierto en `12_coastal_perkey.pcapng` — 2026-08-26)
+
+Dos variantes confirmadas con captura individual:
+
+#### `11 03 [ZONE_ID]` — Single zone set
+```
+04 CA 01 11 03 B7 00 00 FF   <- zone 0xB7 = FF (on)
+04 CB 00 11 03 B7 00 00      <- zone 0xB7 = 00 (off)
+04 28 01 11 03 15 00 00 FF   <- zone 0x15 = FF
+```
+- LEN = 1 (1 byte de state)
+- ZONE_ID: HID usage ID o zone ID interno (0xB7, 0x15 vistos)
+- STATE: 0x00 (off), 0xFF (on), o valores intermedios para brightness
+
+#### `11 36 [PARAM]` — Bulk zones set
+```
+04 19 2E 11 36 00 00 00 [56 bytes packed data]   <- todas zonas
+04 54 29 11 36 36 00 00 [56 bytes packed data]   <- todas zonas (param1=0x36)
+04 81 32 11 36 6C 00 00 [56 bytes packed data]   <- todas zonas (param1=0x6C)
+04 28 2E 11 36 0E 01 00 [56 bytes packed data]   <- todas zonas (param1=0x0E, flag=0x01)
+```
+- LEN: longitud del payload (varía)
+- PARAM1: byte variable (startFlag o zone count)
+- DATA: 56 bytes packed, 1 byte per zone (max 56 zonas)
+
+**Análisis de data packed** (frame 164 con 41 FF + 15 ceros = 56 bytes):
+```
+FF FF FF FF  00 00  FF 00 00  FF 00 00  FF 00 00  00 00 00  FF FF FF FF FF FF FF ...
+[4 blanco] [sep] [1rojo] [1rojo] [1rojo] [sep][???] [más blanco]
+```
+
+**Hipótesis actual:** 1 byte per zone, max 56 zones. Cada byte controla on/off (FF=on, 00=off), o quizás brightness level.
+
+**Lo que falta:** mapeo exacto de zone ID → key física del teclado. Sin eso no podemos hacer per-key RGB desde SignalRGB.
+
+### Zona format — single RGB vs packed bulk
+
+Mirando las dos formas de "set color":
+- **`06 03 05 00 00 R G B`** (single solid) → setea TODAS las zonas al mismo RGB (3 bytes)
+- **`11 36 [56 bytes packed]`** (bulk) → setea cada zona individualmente (1 byte/zone)
+
+Para per-key real con color arbitrario, habría que combinar ambos formatos (RGB per zone = 3 bytes per zone en lugar de 1 byte). Esto requiere más capturas del comando coastal con diferentes colores RGB.
 
 ### Magic 0x55AA (CONFIRMADO)
 

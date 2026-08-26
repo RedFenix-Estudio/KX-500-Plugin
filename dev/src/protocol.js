@@ -96,6 +96,63 @@ function describeWriteCall(packet) {
     return `device.write([${Array.from(packet.slice(0, 12)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(', ')}...], ${packet.length});`;
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// PER-ZONE — comandos bulk y single (v0.5.0)
+//
+// Estructura confirmada en `12_coastal_perkey.pcapng`:
+//
+//   BULK:  [04] [SEQ] [LEN] [11] [36] [PARAM1] [00] [FLAG] [DATA 56B]
+//   SINGLE:[04] [SEQ] [01] [11] [03] [ZONE_ID] [00] [FLAG] [STATE]
+//
+//   - SEQ: sequence counter
+//   - LEN: longitud del payload (variable)
+//   - 11 36: magic "bulk zone set"
+//   - 11 03: magic "single zone set"
+//   - PARAM1/ZONE_ID: byte variable
+//   - 00: byte fijo
+//   - FLAG: 0x00 o 0x01 visto
+//   - DATA bulk: 56 bytes packed (1 byte per zone, max 56 zones)
+//   - STATE single: 1 byte (0x00=off, 0xFF=on, intermedios=brightness?)
+//
+// Zonas según handshake bitmap: 19 IDs (1..18, 20 — falta 19).
+// ══════════════════════════════════════════════════════════════════════
+
+function buildSetZonesBulk(zones, param1 = 0x00, flag = 0x00, seq) {
+    if (zones.length > 56) {
+        throw new Error(`too many zones (${zones.length}), max 56 per packet`);
+    }
+    const dataBytes = new Uint8Array(56);
+    for (let i = 0; i < zones.length; i++) {
+        dataBytes[i] = zones[i] & 0xFF;
+    }
+    const len = zones.length & 0xFF;
+    const packet = new Uint8Array(REPORT_SIZE);
+    packet[0] = REPORT_ID;
+    packet[1] = seq & 0xFF;
+    packet[2] = len;
+    packet[3] = 0x11;
+    packet[4] = 0x36;
+    packet[5] = param1 & 0xFF;
+    packet[6] = 0x00;
+    packet[7] = flag & 0xFF;
+    packet.set(dataBytes, 8);
+    return packet;
+}
+
+function buildSetSingleZone(zoneId, state, param = 0x00, flag = 0x00, seq) {
+    const packet = new Uint8Array(REPORT_SIZE);
+    packet[0] = REPORT_ID;
+    packet[1] = seq & 0xFF;
+    packet[2] = 0x01;
+    packet[3] = 0x11;
+    packet[4] = 0x03;
+    packet[5] = zoneId & 0xFF;
+    packet[6] = param & 0xFF;
+    packet[7] = flag & 0xFF;
+    packet[8] = state & 0xFF;
+    return packet;
+}
+
 // ════════════════════════════════════════════════════════════════════
 // ACCIONES DE ALTO NIVEL — todas confirmadas con captura individual
 // ════════════════════════════════════════════════════════════════════
@@ -280,6 +337,9 @@ export {
     buildDirection,
     buildBreathing,
     buildColorfulNormallyOn,
+    // Per-zone builders (v0.5.0)
+    buildSetZonesBulk,
+    buildSetSingleZone,
     // Validators
     isValidPacket,
     isFullPacket,

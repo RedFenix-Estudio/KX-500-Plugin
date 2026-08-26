@@ -180,6 +180,20 @@ function actionBreathing() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// PER-ZONE (v0.5.0) — pendiente de integración final
+//
+// TODO: integrar cuando el solid color (actionSolidColor) funcione.
+// Hoy Render() llama a actionSolidColor (color uniforme) que deberia
+// encender el teclado si el formato es correcto. Una vez confirmado,
+// podemos migrar a per-zone.
+//
+// Funciones disponibles en protocol.js:
+//   buildSetZonesBulk(zonesArray, param1, flag, seq)
+//   buildSetSingleZone(zoneId, state, param, flag, seq)
+//
+// ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
 // LAYOUT — 104 keys full-size US ANSI
 // ════════════════════════════════════════════════════════════════════
 const KX500_KEYS = [

@@ -30,6 +30,8 @@ import {
     buildDirection,
     buildBreathing,
     buildColorfulNormallyOn,
+    buildSetZonesBulk,
+    buildSetSingleZone,
     nextSeq,
     resetSeq,
     getSeq,
@@ -232,6 +234,69 @@ test('buildDirection genera paquete con magic 06 01 03', () => {
     assertEq(pkt[4], 0x01);
     assertEq(pkt[5], 0x03);  // sub-cmd direction
     assertEq(pkt[8], 0xFF);  // reverse=false → 0xFF
+});
+
+// Per-zone builders (v0.5.0)
+
+test('buildSetSingleZone genera paquete con magic 11 03', () => {
+    const pkt = buildSetSingleZone(0xB7, 0xFF, 0x00, 0x00, 0x10);
+    assertEq(pkt[0], REPORT_ID);
+    assertEq(pkt[1], 0x10);
+    assertEq(pkt[2], 0x01);
+    assertEq(pkt[3], 0x11);
+    assertEq(pkt[4], 0x03);
+    assertEq(pkt[5], 0xB7);
+    assertEq(pkt[6], 0x00);
+    assertEq(pkt[7], 0x00);
+    assertEq(pkt[8], 0xFF);
+});
+
+test('buildSetSingleZone acepta state 0x00 (off)', () => {
+    const pkt = buildSetSingleZone(0xB7, 0x00, 0x00, 0x00, 0x10);
+    assertEq(pkt[8], 0x00);
+});
+
+test('buildSetZonesBulk genera paquete con magic 11 36', () => {
+    const zones = [0xFF, 0xFF, 0xFF, 0x00, 0x00, 0xFF];
+    const pkt = buildSetZonesBulk(zones, 0x00, 0x00, 0x10);
+    assertEq(pkt[0], REPORT_ID);
+    assertEq(pkt[1], 0x10);
+    assertEq(pkt[2], 6);
+    assertEq(pkt[3], 0x11);
+    assertEq(pkt[4], 0x36);
+    assertEq(pkt[5], 0x00);
+    assertEq(pkt[6], 0x00);
+    assertEq(pkt[7], 0x00);
+    assertEq(pkt[8], 0xFF);
+    assertEq(pkt[9], 0xFF);
+    assertEq(pkt[10], 0xFF);
+    assertEq(pkt[11], 0x00);
+    assertEq(pkt[12], 0x00);
+    assertEq(pkt[13], 0xFF);
+    assertEq(pkt[14], 0x00);  // padding
+});
+
+test('buildSetZonesBulk rechaza más de 56 zonas', () => {
+    const zones = new Array(57).fill(0xFF);
+    let threw = false;
+    try { buildSetZonesBulk(zones); } catch { threw = true; }
+    assert(threw);
+});
+
+test('buildSetZonesBulk acepta exactamente 56 zonas', () => {
+    const zones = new Array(56).fill(0xFF);
+    const pkt = buildSetZonesBulk(zones, 0x00, 0x00, 0x10);
+    assertEq(pkt[2], 56);
+});
+
+test('buildSetZonesBulk permite param1 custom', () => {
+    const pkt = buildSetZonesBulk([0xFF], 0x36, 0x00, 0x10);
+    assertEq(pkt[5], 0x36);
+});
+
+test('buildSetZonesBulk permite flag custom', () => {
+    const pkt = buildSetZonesBulk([0xFF], 0x00, 0x01, 0x10);
+    assertEq(pkt[7], 0x01);
 });
 
 // ════════════════════════════════════════════════════════════════════
