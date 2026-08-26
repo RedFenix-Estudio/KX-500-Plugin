@@ -11,7 +11,7 @@
 import { KX500_KEYS, LAYOUT_SIZE } from '../src/layout.js';
 import {
     VID, PID, REPORT_SIZE, REPORT_ID,
-    buildSolidColor, buildShutdown, buildHeartbeatStart, buildHeartbeatEnd,
+    buildSolidColor, buildOff, buildHeartbeatStart, buildHeartbeatEnd,
 } from '../src/protocol.js';
 
 console.log('🩺 KX-500 Smoke Test\n');
@@ -28,7 +28,7 @@ console.log(`🔌 HID: VID=0x${VID.toString(16)}, PID=0x${PID.toString(16)}, rep
 
 // Build packets
 const red = buildSolidColor(255, 0, 0);
-const off = buildShutdown();
+const off = buildOff();
 const hbS = buildHeartbeatStart();
 const hbE = buildHeartbeatEnd();
 

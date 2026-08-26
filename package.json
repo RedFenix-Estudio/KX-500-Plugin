@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "SignalRGB plugin for Checkpoint KX-500 (NA-KB-1001) — full-size RGB keyboard",
   "type": "module",
-  "main": "KX500_Lite.js",
+  "main": "KX500_Plugin.js",
   "scripts": {
     "test": "node dev/test/validate.js",
     "test:smoke": "node dev/test/smoke.js",

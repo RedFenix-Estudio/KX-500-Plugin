@@ -74,11 +74,23 @@ function buildPacket(seq, cmd, params = []) {
 }
 
 function buildHeartbeatStart() {
-    return new Uint8Array([REPORT_ID, 0x01, 0x00, 0x01]);
+    // Heartbeat real (visto en captura): 04 01 00 01 + 60 bytes padding 0x00
+    const pkt = new Uint8Array(REPORT_SIZE);
+    pkt[0] = REPORT_ID;
+    pkt[1] = 0x01;
+    pkt[2] = 0x00;
+    pkt[3] = 0x01;
+    return pkt;
 }
 
 function buildHeartbeatEnd() {
-    return new Uint8Array([REPORT_ID, 0x02, 0x00, 0x02]);
+    // Heartbeat real (visto en captura): 04 02 00 02 + 60 bytes padding 0x00
+    const pkt = new Uint8Array(REPORT_SIZE);
+    pkt[0] = REPORT_ID;
+    pkt[1] = 0x02;
+    pkt[2] = 0x00;
+    pkt[3] = 0x02;
+    return pkt;
 }
 
 /**
