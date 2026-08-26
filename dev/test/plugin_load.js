@@ -7,6 +7,17 @@ global.device = {
     setControllableLeds: () => {},
     write: (data, len) => { writes.push({ method: 'write', data: Array.from(data).slice(0, 16), len }); },
     send_report: (data, len) => { writes.push({ method: 'send_report', data: Array.from(data).slice(0, 16), len }); },
+    control_transfer: (bmReqType, bReq, wVal, wIdx, data, wLen) => {
+        writes.push({
+            method: 'control_transfer',
+            bmReqType,
+            bReq,
+            wVal: '0x' + wVal.toString(16).padStart(4, '0'),
+            wIdx,
+            data: Array.from(data).slice(0, 16),
+            len: wLen,
+        });
+    },
     notify: () => {},
     color: (x, y) => [128, 64, 32],
 };
@@ -60,7 +71,13 @@ console.log('[OK] Solo el RGB endpoint matchea, los otros 4 son ignorados');
 console.log('\n=== Initialize() ===');
 m.Initialize();
 console.log('Writes despues de Initialize:', writes.length, '(esperaba 3: HB_START + HANDSHAKE + HB_END)');
-writes.forEach((w, i) => console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
+writes.forEach((w, i) => {
+    if (w.method === 'control_transfer') {
+        console.log(`  [${i}] control_transfer(bmReqType=0x${w.bmReqType.toString(16)} bReq=0x${w.bReq.toString(16)} wValue=${w.wVal} wIndex=${w.wIdx}): ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
+    } else {
+        console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
+    }
+});
 writes.length = 0;
 
 console.log('\n=== Render() — modo Canvas (promedio) ===');

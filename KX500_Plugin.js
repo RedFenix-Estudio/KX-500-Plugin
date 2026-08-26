@@ -1,20 +1,18 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v1.3.0                                 ║
+ * ║  KX-500 SignalRGB Add-on v1.4.0                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
  * ║  Protocolo HID confirmado por captura USBPcap+Wireshark           ║
  * ║  (2026-08-26, USBPcap2, device 2.2, endpoint 0x03 OUT)           ║
  * ║                                                                  ║
- * ║  Fix de v1.3.0:                                                  ║
- * ║    Cambio de device.write() a device.send_report().               ║
- * ║    device.write() usa WriteFile, que devuelve 0x57                ║
- * ║    (ERROR_INVALID_PARAMETER) en este KX-500.                      ║
- * ║    device.send_report() usa HidD_SetOutputReport, que             ║
- * ║    es la API correcta para Output Reports en devices con          ║
- * ║    Report ID declarado. Confirmado por la doc oficial:            ║
- * ║    "If you get an 'incorrect function' error, switch to           ║
- * ║    device.send_report()".                                        ║
+ * ║  Fix de v1.4.0:                                                   ║
+ * ║    Cambio a device.control_transfer() con HID SET_REPORT          ║
+ * ║    (Output Report, ID 4). El KX-500 no tiene Feature Reports     ║
+ * ║    declarados (HidD_SetFeature -> 0x01 ERROR_INVALID_FUNCTION),   ║
+ * ║    y WriteFile falla con 0x57 ERROR_INVALID_PARAMETER para        ║
+ * ║    Output Reports. La unica via que queda es el control           ║
+ * ║    transfer con SET_REPORT.                                      ║
  * ║                                                                  ║
  * ║  Fix de v1.2.0:                                                   ║
  * ║    Validate() matchea FF1C:0092 en interface 1 (TLC 4).           ║
@@ -31,6 +29,14 @@
  *   [04 01 00 01 ...pad 64B]  START
  *   [...comando real 64B...]
  *   [04 02 00 02 ...pad 64B]  END
+ *
+ * Para el KX-500 se envia via HID SET_REPORT control transfer:
+ *   bmRequestType = 0x21 (Host->Device, Class, Interface)
+ *   bRequest      = 0x09 (SET_REPORT)
+ *   wValue        = 0x0204 (Report Type = Output, Report ID = 4)
+ *   wIndex        = 1     (Interface 1)
+ *   data          = 64 bytes (incluye Report ID 0x04 al inicio)
+ *   wLength       = 64
  */
 
 'use strict';
@@ -72,25 +78,49 @@ function heartbeatEnd() {
     return pad64([REPORT_ID, 0x02, 0x00, 0x02]);
 }
 
+// ════════════════════════════════════════════════════════════════════
+// HID SET_REPORT via control transfer
+// ════════════════════════════════════════════════════════════════════
+// El KX-500 expone Output Reports pero NO Feature Reports, por lo que:
+//   - device.write() (WriteFile) -> 0x57 ERROR_INVALID_PARAMETER
+//   - device.send_report() (HidD_SetFeature) -> 0x01 ERROR_INVALID_FUNCTION
+// La unica via funcional desde el SDK de SignalRGB es el control transfer
+// con HID class request SET_REPORT, que es lo que HidD_SetOutputReport
+// hace internamente. Llega por el endpoint 0x00 (control) en vez del 0x03
+// (interrupt), pero el firmware lo procesa igual.
+const HID_SET_REPORT = 0x09;
+const HID_RT_OUTPUT = 0x02;
+const HID_RTM_OUTPUT_ID4 = (HID_RT_OUTPUT << 8) | REPORT_ID; // 0x0204
+const HID_BM_HOST_TO_DEV_CLASS_IFACE = 0x21;
+const HID_INTERFACE_NUMBER = 1;
+
+function hidSetReport(packet) {
+    // bmRequestType, bRequest, wValue, wIndex, data, wLength
+    return device.control_transfer(
+        HID_BM_HOST_TO_DEV_CLASS_IFACE,  // 0x21
+        HID_SET_REPORT,                   // 0x09
+        HID_RTM_OUTPUT_ID4,               // 0x0204
+        HID_INTERFACE_NUMBER,             // 1
+        packet,
+        REPORT_SIZE                       // 64
+    );
+}
+
 function writeWrapped(packet) {
     try {
-        // device.send_report() usa HidD_SetOutputReport internamente.
-        // device.write() usa WriteFile, que devuelve 0x57 (ERROR_INVALID_PARAMETER)
-        // para HID devices con Report ID declarado (como el KX-500).
-        // Ver: https://docs.signalrgb.com/developer/plugins/determining-device-write-type-/
-        device.send_report(heartbeatStart(), REPORT_SIZE);
-        device.send_report(packet, REPORT_SIZE);
-        device.send_report(heartbeatEnd(), REPORT_SIZE);
+        hidSetReport(heartbeatStart());
+        hidSetReport(packet);
+        hidSetReport(heartbeatEnd());
     } catch (err) {
-        try { device.log(`[KX500] send_report error: ${err.message}`); } catch (_) {}
+        try { device.log(`[KX500] control_transfer error: ${err.message}`); } catch (_) {}
     }
 }
 
 function writeHandshake() {
     try {
-        device.send_report(heartbeatStart(), REPORT_SIZE);
-        device.send_report(pad64(HANDSHAKE), REPORT_SIZE);
-        device.send_report(heartbeatEnd(), REPORT_SIZE);
+        hidSetReport(heartbeatStart());
+        hidSetReport(pad64(HANDSHAKE));
+        hidSetReport(heartbeatEnd());
     } catch (err) {
         try { device.log(`[KX500] handshake error: ${err.message}`); } catch (_) {}
     }
