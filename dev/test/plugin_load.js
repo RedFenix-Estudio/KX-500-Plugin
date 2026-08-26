@@ -5,7 +5,8 @@ global.device = {
     setName: () => {},
     setSize: () => {},
     setControllableLeds: () => {},
-    write: (data, len) => { writes.push({ data: Array.from(data).slice(0, 16), len }); },
+    write: (data, len) => { writes.push({ method: 'write', data: Array.from(data).slice(0, 16), len }); },
+    send_report: (data, len) => { writes.push({ method: 'send_report', data: Array.from(data).slice(0, 16), len }); },
     notify: () => {},
     color: (x, y) => [128, 64, 32],
 };
@@ -59,14 +60,14 @@ console.log('[OK] Solo el RGB endpoint matchea, los otros 4 son ignorados');
 console.log('\n=== Initialize() ===');
 m.Initialize();
 console.log('Writes despues de Initialize:', writes.length, '(esperaba 3: HB_START + HANDSHAKE + HB_END)');
-writes.forEach((w, i) => console.log(`  [${i}] ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
+writes.forEach((w, i) => console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
 writes.length = 0;
 
 console.log('\n=== Render() — modo Canvas (promedio) ===');
 global.LightingMode = 'Canvas';
 m.Render();
 console.log('Writes:', writes.length, '(esperaba 3)');
-writes.forEach((w, i) => console.log(`  [${i}] ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
+writes.forEach((w, i) => console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
 writes.length = 0;
 
 console.log('\n=== Render() — modo Forced (#ff8800) ===');
@@ -74,17 +75,17 @@ global.LightingMode = 'Forced';
 global.forcedColor = '#ff8800';
 m.Render();
 console.log('Writes:', writes.length);
-writes.forEach((w, i) => console.log(`  [${i}] ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
+writes.forEach((w, i) => console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
 writes.length = 0;
 
 console.log('\n=== Shutdown() con shutdownColor #000000 ===');
 global.shutdownColor = '#000000';
 m.Shutdown(false);
 console.log('Writes:', writes.length, '(esperaba 3, comando OFF 04 08 00 06 01 01)');
-writes.forEach((w, i) => console.log(`  [${i}] ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
+writes.forEach((w, i) => console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
 writes.length = 0;
 
 console.log('\n=== Shutdown(true) — sistema suspendiendo ===');
 m.Shutdown(true);
 console.log('Writes:', writes.length);
-writes.forEach((w, i) => console.log(`  [${i}] ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));
+writes.forEach((w, i) => console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`));

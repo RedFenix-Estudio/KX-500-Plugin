@@ -1,20 +1,23 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v1.2.0                                 ║
+ * ║  KX-500 SignalRGB Add-on v1.3.0                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
  * ║  Protocolo HID confirmado por captura USBPcap+Wireshark           ║
  * ║  (2026-08-26, USBPcap2, device 2.2, endpoint 0x03 OUT)           ║
  * ║                                                                  ║
- * ║  Fix de v1.2.0:                                                  ║
- * ║    Validate() matchea FF1C:0092 en interface 1 (TLC 4), que es    ║
- * ║    la TLC Vendor Defined donde vive el RGB. Confirmado contra     ║
- * ║    el log real de SignalRGB ("hid.initialize.info [IGNORE]").     ║
+ * ║  Fix de v1.3.0:                                                  ║
+ * ║    Cambio de device.write() a device.send_report().               ║
+ * ║    device.write() usa WriteFile, que devuelve 0x57                ║
+ * ║    (ERROR_INVALID_PARAMETER) en este KX-500.                      ║
+ * ║    device.send_report() usa HidD_SetOutputReport, que             ║
+ * ║    es la API correcta para Output Reports en devices con          ║
+ * ║    Report ID declarado. Confirmado por la doc oficial:            ║
+ * ║    "If you get an 'incorrect function' error, switch to           ║
+ * ║    device.send_report()".                                        ║
  * ║                                                                  ║
- * ║  El error 0x57 (ERROR_INVALID_PARAMETER) en versiones previas     ║
- * ║  era por el paquete Sinowealth de 520 bytes, NO por la interface. ║
- * ║  Con paquetes de 64 bytes correctos + interface correcta,         ║
- * ║  el firmware debería aceptar los comandos.                       ║
+ * ║  Fix de v1.2.0:                                                   ║
+ * ║    Validate() matchea FF1C:0092 en interface 1 (TLC 4).           ║
  * ╚══════════════════════════════════════════════════════════════════╝
  *
  * Estructura del paquete (todos los 64B):
@@ -71,19 +74,23 @@ function heartbeatEnd() {
 
 function writeWrapped(packet) {
     try {
-        device.write(heartbeatStart(), REPORT_SIZE);
-        device.write(packet, REPORT_SIZE);
-        device.write(heartbeatEnd(), REPORT_SIZE);
+        // device.send_report() usa HidD_SetOutputReport internamente.
+        // device.write() usa WriteFile, que devuelve 0x57 (ERROR_INVALID_PARAMETER)
+        // para HID devices con Report ID declarado (como el KX-500).
+        // Ver: https://docs.signalrgb.com/developer/plugins/determining-device-write-type-/
+        device.send_report(heartbeatStart(), REPORT_SIZE);
+        device.send_report(packet, REPORT_SIZE);
+        device.send_report(heartbeatEnd(), REPORT_SIZE);
     } catch (err) {
-        try { device.log(`[KX500] write error: ${err.message}`); } catch (_) {}
+        try { device.log(`[KX500] send_report error: ${err.message}`); } catch (_) {}
     }
 }
 
 function writeHandshake() {
     try {
-        device.write(heartbeatStart(), REPORT_SIZE);
-        device.write(pad64(HANDSHAKE), REPORT_SIZE);
-        device.write(heartbeatEnd(), REPORT_SIZE);
+        device.send_report(heartbeatStart(), REPORT_SIZE);
+        device.send_report(pad64(HANDSHAKE), REPORT_SIZE);
+        device.send_report(heartbeatEnd(), REPORT_SIZE);
     } catch (err) {
         try { device.log(`[KX500] handshake error: ${err.message}`); } catch (_) {}
     }
