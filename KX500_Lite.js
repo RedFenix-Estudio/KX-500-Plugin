@@ -91,15 +91,20 @@ function buildPacket(seq, cmd, params = []) {
 
 /**
  * Envía una acción envuelta en heartbeat START/END.
+ *
+ * NOTA: device.write() de SignalRGB requiere 2 argumentos: (data, length).
+ * Si se omite length, da error "Insufficient arguments" y falla silenciosamente.
  */
 function sendAction(seq, cmd, params = []) {
     try {
         const packet = buildPacket(seq, cmd, params);
-        device.write([RGB_REPORT_ID, 0x01, 0x00, 0x01]);   // START
+        const hbStart = [RGB_REPORT_ID, 0x01, 0x00, 0x01];
+        const hbEnd = [RGB_REPORT_ID, 0x02, 0x00, 0x02];
+        device.write(hbStart, hbStart.length);
         device.pause(1);
-        device.write(packet);
+        device.write(packet, packet.length);
         device.pause(1);
-        device.write([RGB_REPORT_ID, 0x02, 0x00, 0x02]);   // END
+        device.write(hbEnd, hbEnd.length);
         device.pause(1);
     } catch (err) {
         device.log(`[KX500] sendAction error: ${err.message}`);
@@ -304,10 +309,17 @@ function applyForcedEffect(ledsArr, time, color, effectId) {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FRAMEBUFFER
+// FRAMEBUFFER + throttling
+//
+// Render() de SignalRGB corre cada ~30ms (~33 fps).
+// Si mandamos 3 paquetes (HB_START + cmd + HB_END) por cada frame = 99 pkts/seg
+// que pueden saturar el MCU del KX-500.
+// Throttle: solo enviar 1 de cada N frames (~11 comandos/seg).
 // ════════════════════════════════════════════════════════════════════
 let ledBuffer = [];
 let lastRenderTime = 0;
+let renderFrameCounter = 0;
+const RENDER_THROTTLE = 3;  // enviar cada 3 frames = ~11 comandos/seg
 
 // ════════════════════════════════════════════════════════════════════
 // SIGNALRGB SDK EXPORTS
@@ -468,6 +480,11 @@ export function Render() {
             led.b = c[2];
         }
     }
+
+    // Throttle: solo enviar cada N frames para no saturar el USB
+    renderFrameCounter++;
+    if (renderFrameCounter < RENDER_THROTTLE) return;
+    renderFrameCounter = 0;
 
     // Promedio de color (el KX-500 parece tener zones, no per-key)
     let avgR = 0, avgG = 0, avgB = 0;

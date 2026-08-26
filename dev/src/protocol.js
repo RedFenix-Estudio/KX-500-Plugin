@@ -81,6 +81,21 @@ function buildHeartbeatEnd() {
     return new Uint8Array([REPORT_ID, 0x02, 0x00, 0x02]);
 }
 
+/**
+ * Helper para enviar paquetes a SignalRGB.
+ *
+ * IMPORTANTE: device.write() de SignalRGB requiere 2 argumentos: (data, length).
+ * Si se omite length, da error "Insufficient arguments" y falla silenciosamente.
+ *
+ * En el plugin Lite, se usa directamente:
+ *   device.write(hbStart, hbStart.length);
+ *   device.write(packet, packet.length);
+ *   device.write(hbEnd, hbEnd.length);
+ */
+function describeWriteCall(packet) {
+    return `device.write([${Array.from(packet.slice(0, 12)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(', ')}...], ${packet.length});`;
+}
+
 // ════════════════════════════════════════════════════════════════════
 // ACCIONES DE ALTO NIVEL — todas confirmadas con captura individual
 // ════════════════════════════════════════════════════════════════════
