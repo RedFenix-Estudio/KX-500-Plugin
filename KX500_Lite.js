@@ -599,11 +599,47 @@ export function Render() {
         device.log(`[KX500] Render: avg=(${avgR},${avgG},${avgB}) nonZero=${nonZeroCount}/${ledBuffer.length}`);
     }
 
-    // Enviar solid color con el promedio
-    try {
-        actionSolidColor(avgR, avgG, avgB);
-    } catch (err) {
-        // Silenciar errores intermitentes
+    // v0.6.0: PER-ZONE activo — dividir el teclado en zonas por fila y mandar
+    // solid color por zona. Esto da control por fila (no per-key todavía).
+    //
+    // Zonas:
+    //   0: F-row (y=0)        - Esc + F1-F12 + Print Screen + Scroll Lock + Pause
+    //   1: Number row (y=1)   - ` 1-0 - = Backspace + Insert/Home/PgUp + Numpad top
+    //   2: Q row (y=2)        - Tab + Q-P [ ] \ + Del/End/PgDn + Numpad 789
+    //   3: A row (y=3)        - Caps + A-L ; ' Enter + Numpad 456
+    //   4: Z row (y=4)        - LShift + Z-M , . / RShift + Up + Numpad 123/Enter
+    //   5: Space row (y=5)    - Ctrl/Win/Alt/Space/Alt/Win/Menu/Ctrl + Arrows + Numpad 0/.
+
+    const ZONE_COUNT = 6;
+    const zoneColors = new Array(ZONE_COUNT).fill(null).map(() => ({ r: 0, g: 0, b: 0, count: 0 }));
+    for (const led of ledBuffer) {
+        const zone = Math.min(5, Math.max(0, Math.floor(led.y)));
+        zoneColors[zone].r += led.r;
+        zoneColors[zone].g += led.g;
+        zoneColors[zone].b += led.b;
+        zoneColors[zone].count++;
+    }
+
+    // Aplicar fallback (forcedColor) si el canvas está vacío
+    let fb = null;
+    if (nonZeroCount === 0 && typeof forcedColor !== "undefined") {
+        fb = hexToRgb(forcedColor || "#0099ff");
+    }
+
+    // Enviar solid color por zona (cada zona = 1 paquete)
+    for (let z = 0; z < ZONE_COUNT; z++) {
+        const zc = zoneColors[z];
+        if (zc.count === 0) continue;
+        let r = Math.round(zc.r / zc.count);
+        let g = Math.round(zc.g / zc.count);
+        let b = Math.round(zc.b / zc.count);
+        if (fb) { r = fb[0]; g = fb[1]; b = fb[2]; }
+        try {
+            actionSolidColor(r, g, b);
+            device.pause(5);
+        } catch (err) {
+            // Silenciar errores intermitentes
+        }
     }
 }
 
