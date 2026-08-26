@@ -1,19 +1,17 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Plugin — Lite v0.7.2                          ║
+ * ║  KX-500 SignalRGB Plugin v0.7.3                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v0.7.2 — FORMATO CORRECTO del KX-500 (64 bytes, no 520)       ║
+ * ║  v0.7.3 (2026-08-26) — REWRITE FINAL con debug                  ║
  * ║                                                                  ║
- * ║  LECCIONES APRENDIDAS:                                           ║
- * ║  1. KX-500 NO soporta Feature Reports (HidD_SetFeature falla)   ║
- * ║  2. KX-500 SOLO acepta Output Reports (HID WriteFile)           ║
- * ║  3. Endpoint tiene wMaxPacketSize = 64 bytes                    ║
- * ║  4. Driver oficial manda paquetes de 64 bytes, no 520            ║
- * ║  5. Plugin Sinowealth (520B) NO aplica al KX-500                ║
- * ║                                                                  ║
- * ║  Formato correcto (USBPcap-verified):                            ║
- * ║    [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 hasta 64] ║
+ * ║  Cambios vs v0.7.2:                                              ║
+ * ║    - Archivo renombrado: KX500_Lite.js → KX500_Plugin.js        ║
+ * ║      (SignalRGB usa el filename como ID en el inspector)        ║
+ * ║    - HANDSHAKE packet en Initialize (visto en USBPcap)           ║
+ * ║    - Logs en Render() para diagnosticar si se está llamando     ║
+ * ║    - BRIGHTNESS al max en Initialize (evita OFF accidental)     ║
+ * ║    - Format del KX-500 USBPcap-verified (64 bytes)               ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
@@ -31,16 +29,10 @@ const DEVICE_NAME = "Checkpoint KX-500 (NA-KB-1001)";
 // ════════════════════════════════════════════════════════════════════
 const KX500_VID = 0x320F;
 const KX500_PID = 0x5008;
-const HID_REPORT_ID = 0x04;       // HID Report ID del KX-500
-const PACKET_SIZE = 64;            // wMaxPacketSize del endpoint (CRITICO!)
+const HID_REPORT_ID = 0x04;
+const PACKET_SIZE = 64;
 
-// Format EXACTO del KX-500 (USBPcap-verified):
-// [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 a 64]
-// SEQ arranca en 0x08, se incrementa monotónicamente
-const CMD_SOLID_COLOR = 0x03;
-const SOLID_COLOR_HEADER = [0x06, 0x03, 0x05, 0x00, 0x00];  // 5 bytes magic
-
-// SEQ counter local
+// SEQ counter local (arranca en 0x08 después del handshake)
 let _seqCounter = 0x08;
 
 function nextSeq() {
@@ -51,6 +43,57 @@ function nextSeq() {
 
 function resetSeq() {
     _seqCounter = 0x08;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// HANDSHAKE PACKET — visto en USBPcap al abrir el driver oficial
+// Formato: [04] [A2] [03] [04 2C] [00 00 00] [55 AA FF 02 0F 32 08 50 ...]
+// Contiene VID/PID del KX-500 embebidos little-endian
+// ════════════════════════════════════════════════════════════════════
+const HANDSHAKE_PACKET = [
+    0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
+    0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
+    0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    0x11, 0x12, 0x14
+];
+// Pad a 64 bytes
+while (HANDSHAKE_PACKET.length < PACKET_SIZE) HANDSHAKE_PACKET.push(0x00);
+
+// Format del solid color (USBPcap-verified):
+// [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 hasta 64]
+const CMD_SOLID_COLOR = 0x03;
+const SOLID_COLOR_PREFIX = [0x06, 0x03, 0x05, 0x00, 0x00];  // 5 bytes magic
+
+// Format del brightness level 4 (max, visto en 17_brillo_varios.pcapng):
+// [04] [0C] [00] [06 01 01] [00 00 04] [pad 0x00 hasta 64]
+// SEQ = 0x08 + level (level 4 → SEQ 0x0C)
+const BRIGHTNESS_PREFIX = [0x00, 0x06, 0x01, 0x01, 0x00, 0x00];
+
+function buildSolidColorPacket(seq, r, g, b) {
+    const packet = [
+        HID_REPORT_ID,
+        seq & 0xFF,
+        CMD_SOLID_COLOR,
+        ...SOLID_COLOR_PREFIX,
+        r & 0xFF, g & 0xFF, b & 0xFF,
+    ];
+    while (packet.length < PACKET_SIZE) packet.push(0x00);
+    return packet.slice(0, PACKET_SIZE);
+}
+
+function buildBrightnessPacket(level) {
+    if (level < 0 || level > 4) return null;
+    const seq = 0x08 + level;
+    const packet = [
+        HID_REPORT_ID,
+        seq & 0xFF,
+        ...BRIGHTNESS_PREFIX,
+        level & 0xFF,
+    ];
+    while (packet.length < PACKET_SIZE) packet.push(0x00);
+    return packet.slice(0, PACKET_SIZE);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -107,7 +150,7 @@ const LAYOUT_SIZE = (function () {
 })();
 
 // ════════════════════════════════════════════════════════════════════
-// SEND COLOR — formato KX-500 USBPcap-verified, 64 bytes
+// SEND COLORS — formato KX-500 USBPcap-verified, 64 bytes
 // ════════════════════════════════════════════════════════════════════
 function hexToRgb(hex) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
@@ -142,20 +185,6 @@ function getAverageColor() {
     };
 }
 
-function buildSolidColorPacket(seq, r, g, b) {
-    // Formato KX-500 (USBPcap-verified):
-    //   [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 hasta 64]
-    const packet = [
-        HID_REPORT_ID,
-        seq & 0xFF,
-        CMD_SOLID_COLOR,
-        ...SOLID_COLOR_HEADER,
-        r & 0xFF, g & 0xFF, b & 0xFF,
-    ];
-    while (packet.length < PACKET_SIZE) packet.push(0x00);
-    return packet.slice(0, PACKET_SIZE);
-}
-
 function sendColors(overrideColor) {
     if (!vLedNames.length) return;
 
@@ -168,7 +197,6 @@ function sendColors(overrideColor) {
         r = c[0]; g = c[1]; b = c[2];
     } else {
         const avg = getAverageColor();
-        // Si canvas vacío, usar forcedColor como fallback
         if (avg.nonZero === 0 && typeof forcedColor !== "undefined") {
             const c = hexToRgb(forcedColor || "#009bde");
             r = c[0]; g = c[1]; b = c[2];
@@ -179,12 +207,10 @@ function sendColors(overrideColor) {
 
     const packet = buildSolidColorPacket(nextSeq(), r, g, b);
 
-    // UN SOLO write por frame (Output Report, 64 bytes)
     try {
         device.write(packet, PACKET_SIZE);
-        device.pause(5);
     } catch (err) {
-        // Silenciar
+        device.log(`[KX500] write error: ${err.message}`);
     }
 }
 
@@ -259,12 +285,42 @@ export function Initialize() {
         device.setSize(LAYOUT_SIZE);
         device.setControllableLeds(vLedNames.slice(), vLedPositions.map(p => p.slice()));
         device.log(`[KX500] Registered: ${DEVICE_NAME} (${vLedNames.length} keys, ${LAYOUT_SIZE[0]}×${LAYOUT_SIZE[1]})`);
-        device.log(`[KX500] Protocol: HID Output Report, 64B, Report ID 0x04`);
-        device.log(`[KX500] Format: [04][SEQ][03][06 03 05 00 00][R G B]`);
-        resetSeq();
+        device.log(`[KX500] Protocol: HID Output Report, ${PACKET_SIZE}B, Report ID 0x${HID_REPORT_ID.toString(16)}`);
     } catch (err) {
         device.notify("KX-500 init error", err.message, 1);
         device.log(`[KX500] init failed: ${err.message}`);
+        return;
+    }
+
+    resetSeq();
+
+    // 1. Mandar HANDSHAKE (visto en USBPcap, es lo primero que hace el driver oficial)
+    try {
+        device.write(HANDSHAKE_PACKET, PACKET_SIZE);
+        device.pause(50);
+        device.log(`[KX500] HANDSHAKE sent (${HANDSHAKE_PACKET.length}B → padded to ${PACKET_SIZE})`);
+    } catch (err) {
+        device.log(`[KX500] HANDSHAKE failed: ${err.message}`);
+    }
+
+    // 2. Setear brightness al MAX (visto en 17_brillo_varios.pcapng)
+    try {
+        const brightPacket = buildBrightnessPacket(4);
+        device.write(brightPacket, PACKET_SIZE);
+        device.pause(50);
+        device.log(`[KX500] Brightness MAX (level 4) sent`);
+    } catch (err) {
+        device.log(`[KX500] Brightness failed: ${err.message}`);
+    }
+
+    // 3. Setear un color inicial (azul brillante) para feedback visual
+    try {
+        const initColor = buildSolidColorPacket(nextSeq(), 0x00, 0x99, 0xFF);
+        device.write(initColor, PACKET_SIZE);
+        device.pause(50);
+        device.log(`[KX500] Initial color (azul) sent`);
+    } catch (err) {
+        device.log(`[KX500] Initial color failed: ${err.message}`);
     }
 }
 
@@ -286,7 +342,11 @@ export {
     KX500_PID,
     HID_REPORT_ID,
     PACKET_SIZE,
+    HANDSHAKE_PACKET,
     sendColors,
     hexToRgb,
     buildSolidColorPacket,
+    buildBrightnessPacket,
+    nextSeq,
+    resetSeq,
 };
