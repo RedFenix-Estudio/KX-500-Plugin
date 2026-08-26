@@ -1,15 +1,20 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v1.1.0                                 ║
+ * ║  KX-500 SignalRGB Add-on v1.2.0                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
  * ║  Protocolo HID confirmado por captura USBPcap+Wireshark           ║
  * ║  (2026-08-26, USBPcap2, device 2.2, endpoint 0x03 OUT)           ║
  * ║                                                                  ║
- * ║  Cambio crítico vs v1.0.0:                                       ║
- * ║    Validate() ahora apunta SOLO a la interface 1 (Mouse RGB).     ║
- * ║    Antes matcheaba una TLC de la interface 0 (BIOS Keyboard)      ║
- * ║    que no tiene endpoint OUT, y WriteFile fallaba con 0x57.       ║
+ * ║  Fix de v1.2.0:                                                  ║
+ * ║    Validate() matchea FF1C:0092 en interface 1 (TLC 4), que es    ║
+ * ║    la TLC Vendor Defined donde vive el RGB. Confirmado contra     ║
+ * ║    el log real de SignalRGB ("hid.initialize.info [IGNORE]").     ║
+ * ║                                                                  ║
+ * ║  El error 0x57 (ERROR_INVALID_PARAMETER) en versiones previas     ║
+ * ║  era por el paquete Sinowealth de 520 bytes, NO por la interface. ║
+ * ║  Con paquetes de 64 bytes correctos + interface correcta,         ║
+ * ║  el firmware debería aceptar los comandos.                       ║
  * ╚══════════════════════════════════════════════════════════════════╝
  *
  * Estructura del paquete (todos los 64B):
@@ -212,21 +217,30 @@ export function ImageUrl() {
 }
 
 /**
- * Validate — el cambio clave de v1.1.0.
+ * Validate — confirmado con log real de SignalRGB.
  *
- * El RGB del KX-500 está en la interface 1, declarada por el fabricante
- * como HID Mouse (bInterfaceProtocol = 0x02) para evitar problemas con
- * Windows. Esa interface tiene los endpoints 0x82 IN y 0x03 OUT.
+ * El RGB del KX-500 está en la TLC Vendor Defined (FF1C:0092) que
+ * el fabricante registra DENTRO de la interface 1 (la segunda USB
+ * interface, que declara bInterfaceProtocol = 0x02 "Mouse" solo
+ * para evitar problemas con Windows, pero las TLCs HID reales son
+ * 4 colecciones: Keyboard NKRO, Consumer, Consumer swap, y FF1C:0092
+ * que es donde está el RGB).
  *
- * Las otras "collections" que aparecen en el registro
- * (FF1C:0092, etc.) están en la interface 0 (BIOS Keyboard), que NO
- * tiene endpoint de salida. Si las matcheamos, WriteFile falla con
- * 0x57 (ERROR_INVALID_PARAMETER).
+ * Estructura completa del KX-500 (5 TLCs visibles para SignalRGB):
+ *   interface 0, col 0  -> Keyboard BIOS      (intf USB 0)
+ *   interface 1, col 1  -> Keyboard NKRO      (intf USB 1)
+ *   interface 1, col 2  -> Consumer Control   (intf USB 1)
+ *   interface 1, col 3  -> Consumer swap      (intf USB 1)
+ *   interface 1, col 4  -> Vendor Defined     (intf USB 1)  ← RGB
+ *
+ * Mi v1.0.0 matcheaba FF1C:0092 o collection===4, que era correcto.
+ * Mi v1.1.0 se confundió pensando que era Mouse (0x01:0x02) y eso
+ * rompía el match, por eso veías "HID handle is invalid" en el log.
  */
 export function Validate(endpoint) {
     if (endpoint.interface === 1
-        && endpoint.usage_page === 0x01
-        && endpoint.usage === 0x02) {
+        && endpoint.usage_page === 0xFF1C
+        && endpoint.usage === 0x0092) {
         return true;
     }
     return false;

@@ -25,21 +25,36 @@ console.log('LedPositions().length:', m.LedPositions().length);
 console.log('ControllableParameters().length:', m.ControllableParameters().length);
 console.log('ConflictingProcesses():', m.ConflictingProcesses().join(', '));
 
-console.log('\n=== Validate() ===');
-// Endpoints que el KX-500 expone (segun el README):
+console.log('\n=== Validate() — los 5 endpoints reales del KX-500 (de tu log) ===');
+// Endpoints copiados EXACTAMENTE del log de SignalRGB del usuario.
+// Formato del log: endpoint.interface, endpoint.usage, endpoint.usage_page, endpoint.collection
 const endpoints = [
-    // Interface 0 — BIOS Keyboard (NO tiene endpoint OUT, escribir falla)
-    { name: 'BIOS Keyboard (intf 0, Keyboard TLC)', e: { interface: 0, usage_page: 0x01, usage: 0x06, collection: 0 } },
-    { name: 'NKRO Keyboard  (intf 0, Keyboard TLC)', e: { interface: 0, usage_page: 0x01, usage: 0x06, collection: 1 } },
-    { name: 'Vendor Defined (intf 0, FF1C:0092)   ', e: { interface: 0, usage_page: 0xFF1C, usage: 0x0092, collection: 4 } },
-    // Interface 1 — RGB Mouse (TIENE endpoints 0x82 IN + 0x03 OUT, este es el bueno)
-    { name: 'RGB Mouse      (intf 1, Generic Mouse)', e: { interface: 1, usage_page: 0x01, usage: 0x02, collection: 0 } },
-    // Endpoint suelto sin matchear
-    { name: 'Random HID     (intf 0, Consumer)     ', e: { interface: 0, usage_page: 0x0C, usage: 0x01, collection: 0 } },
+    { name: 'intf 1 col2 Consumer      ', e: { interface: 1, usage: 0x000c, usage_page: 0x0001, collection: 0x0002 } },
+    { name: 'intf 1 col3 Consumer swap ', e: { interface: 1, usage: 0x0001, usage_page: 0x000c, collection: 0x0003 } },
+    { name: 'intf 1 col4 Vendor RGB    ', e: { interface: 1, usage: 0x0092, usage_page: 0xff1c, collection: 0x0004 } },
+    { name: 'intf 1 col1 Keyboard NKRO ', e: { interface: 1, usage: 0x0006, usage_page: 0x0001, collection: 0x0001 } },
+    { name: 'intf 0 col0 BIOS Keyboard ', e: { interface: 0, usage: 0x0006, usage_page: 0x0001, collection: 0x0000 } },
 ];
 for (const t of endpoints) {
-    console.log(`  Validate() = ${String(m.Validate(t.e)).padEnd(5)} | ${t.name}`);
+    const matches = m.Validate(t.e);
+    const flag = matches ? 'TAKE ' : 'skip ';
+    console.log(`  ${flag} | ${t.name}`);
 }
+
+// Asercion dura
+const rgb = endpoints.find(t => t.name.includes('RGB'));
+if (!m.Validate(rgb.e)) {
+    console.error('[FAIL] El RGB endpoint (FF1C:0092) no matchea! Validate esta rota.');
+    process.exit(1);
+}
+const otros = endpoints.filter(t => !t.name.includes('RGB'));
+for (const t of otros) {
+    if (m.Validate(t.e)) {
+        console.error(`[FAIL] ${t.name} matchea cuando NO deberia`);
+        process.exit(1);
+    }
+}
+console.log('[OK] Solo el RGB endpoint matchea, los otros 4 son ignorados');
 
 console.log('\n=== Initialize() ===');
 m.Initialize();
