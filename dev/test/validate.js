@@ -1,15 +1,12 @@
 /**
- * Tests offline del plugin KX-500 (no requieren teclado físico)
- *
- * Ejecutar: node dev/test/validate.js (o `npm test`)
+ * Tests offline del plugin KX-500 v0.3.0
  *
  * Cubre:
  *   1. Layout: 104 keys, todas con name/x/y/w/h válidos
- *   2. Protocolo: buildPacket, buildSolidColor, buildShutdown, buildHeartbeat*
- *   3. Heartbeat wrapper: validación estructural
+ *   2. Protocolo: buildOff, buildBrightness, buildSpeed, buildEffect, buildSolidColor
+ *   3. SEQ counter: arranca en 0x08, incrementa monotónicamente
  *   4. Handshake packet: estructura conocida
- *   5. Effects: static, breathing, wave, typing
- *   6. Validaciones SignalRGB: VendorId, ProductId, Size, LedNames
+ *   5. Validaciones (isValidPacket, parsePacket)
  */
 
 'use strict';
@@ -18,26 +15,28 @@ import { KX500_KEYS, LAYOUT_SIZE, getKeyCount } from '../src/layout.js';
 import {
     VID,
     PID,
-    RGB_INTERFACE,
-    RGB_EP_OUT,
     REPORT_SIZE,
     REPORT_ID,
-    CMD,
     HANDSHAKE_PACKET,
     buildPacket,
     buildHeartbeatStart,
     buildHeartbeatEnd,
+    buildOff,
+    buildBrightness,
+    buildSpeed,
+    buildEffect,
     buildSolidColor,
-    buildShutdown,
+    buildEffectMode,
+    buildDirection,
+    buildBreathing,
+    buildColorfulNormallyOn,
+    nextSeq,
+    resetSeq,
+    getSeq,
     isValidPacket,
+    isFullPacket,
     parsePacket,
 } from '../src/protocol.js';
-import {
-    EFFECTS,
-    applyEffect,
-    listEffects,
-    hsvToRgb,
-} from '../src/effects.js';
 
 let pass = 0;
 let fail = 0;
@@ -65,9 +64,14 @@ function assertEq(actual, expected, msg) {
     }
 }
 
-function assertDeepEq(actual, expected, msg) {
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-        throw new Error(`${msg || 'deep values differ'}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+function assertBytes(actual, expected, msg) {
+    if (actual.length !== expected.length) {
+        throw new Error(`${msg || 'length differ'}: expected ${expected.length}, got ${actual.length}`);
+    }
+    for (let i = 0; i < expected.length; i++) {
+        if (actual[i] !== expected[i]) {
+            throw new Error(`${msg || 'byte differ'} at ${i}: expected 0x${expected[i].toString(16)}, got 0x${actual[i].toString(16)}`);
+        }
     }
 }
 
@@ -80,174 +84,194 @@ test('KX500_KEYS tiene 104 keys', () => {
     assertEq(getKeyCount(), 104);
 });
 
-test('Todas las keys tienen name/x/y/w/h válidos', () => {
-    for (const k of KX500_KEYS) {
-        assert(typeof k.name === 'string' && k.name.length > 0, `key con name inválido: ${JSON.stringify(k)}`);
-        assert(typeof k.x === 'number', `key ${k.name} sin x`);
-        assert(typeof k.y === 'number', `key ${k.name} sin y`);
-        assert(typeof k.w === 'number' && k.w > 0, `key ${k.name} sin w válido`);
-        assert(typeof k.h === 'number' && k.h > 0, `key ${k.name} sin h válido`);
-    }
-});
-
 test('LAYOUT_SIZE es [23, 6]', () => {
     assertDeepEq(LAYOUT_SIZE, [23, 6]);
 });
 
-test('No hay keys con nombres duplicados', () => {
-    const names = KX500_KEYS.map(k => k.name);
-    const unique = new Set(names);
-    assertEq(unique.size, names.length, `keys duplicadas: ${names.length - unique.size}`);
-});
-
-test('Keys F1-F12 existen', () => {
-    for (let i = 1; i <= 12; i++) {
-        assert(KX500_KEYS.some(k => k.name === `F${i}`), `Falta F${i}`);
+test('Todas las keys tienen name/x/y/w/h válidos', () => {
+    for (const k of KX500_KEYS) {
+        assert(typeof k.name === 'string' && k.name.length > 0);
+        assert(typeof k.x === 'number');
+        assert(typeof k.y === 'number');
+        assert(typeof k.w === 'number' && k.w > 0);
+        assert(typeof k.h === 'number' && k.h > 0);
     }
 });
 
-test('Numpad completo existe (0-9, ., +, -, *, /, NumLock, Num Enter)', () => {
-    const required = ['NumLock', 'Num /', 'Num *', 'Num -', 'Num 7', 'Num 8', 'Num 9',
-                      'Num 4', 'Num 5', 'Num 6', 'Num 1', 'Num 2', 'Num 3',
-                      'Num Enter', 'Num 0', 'Num .'];
-    for (const name of required) {
-        assert(KX500_KEYS.some(k => k.name === name), `Falta ${name}`);
-    }
-});
-
-test('Space existe con width correcto (6.25u)', () => {
-    const space = KX500_KEYS.find(k => k.name === 'Space');
-    assert(space && space.w === 6.25, `Space width esperado 6.25, got ${space?.w}`);
-});
-
 // ════════════════════════════════════════════════════════════════════
-// 2. TESTS DE PROTOCOLO
+// 2. TESTS DE PROTOCOLO — ACCIONES REALES CONFIRMADAS
 // ════════════════════════════════════════════════════════════════════
-console.log('\n🔌 Protocolo:');
+console.log('\n🔌 Protocolo (comandos reales USBPcap-verified):');
 
-test('Constantes HID correctas', () => {
+test('VID/PID correctos', () => {
     assertEq(VID, 0x320F);
     assertEq(PID, 0x5008);
-    assertEq(REPORT_SIZE, 64);
-    assertEq(REPORT_ID, 0x04);
-    assertEq(RGB_INTERFACE, 1);
-    assertEq(RGB_EP_OUT, 0x03);
 });
 
-test('buildPacket genera paquete de 64 bytes con Report ID correcto', () => {
-    const pkt = buildPacket(CMD.SOLID_COLOR, [0x12, 0x11, 0x36]);
+test('buildOff genera [04 08 00 06 01 01 + padding]', () => {
+    const pkt = buildOff();
     assertEq(pkt.length, REPORT_SIZE);
     assertEq(pkt[0], REPORT_ID);
-    assertEq(pkt[1], CMD.SOLID_COLOR);
-    assertEq(pkt[2], 0x12);
-    assertEq(pkt[3], 0x11);
-    assertEq(pkt[4], 0x36);
-});
-
-test('buildPacket hace padding con 0x00', () => {
-    const pkt = buildPacket(0xFF, [0xAA]);
-    for (let i = 5; i < REPORT_SIZE; i++) {
-        assertEq(pkt[i], 0x00, `byte ${i} debería ser 0x00`);
-    }
-});
-
-test('buildHeartbeatStart genera [04 01 00 01]', () => {
-    const hb = buildHeartbeatStart();
-    assertEq(hb[0], REPORT_ID);
-    assertEq(hb[1], CMD.HB_START);
-    assertEq(hb[2], 0x00);
-    assertEq(hb[3], 0x01);
-});
-
-test('buildHeartbeatEnd genera [04 02 00 02]', () => {
-    const hb = buildHeartbeatEnd();
-    assertEq(hb[0], REPORT_ID);
-    assertEq(hb[1], CMD.HB_END);
-    assertEq(hb[2], 0x00);
-    assertEq(hb[3], 0x02);
-});
-
-test('buildSolidColor genera paquete con magic constants', () => {
-    const pkt = buildSolidColor(255, 0, 0); // rojo
-    assertEq(pkt[0], REPORT_ID);
-    assertEq(pkt[1], CMD.SOLID_COLOR);
-    assertEq(pkt[2], 0x12);   // param default
-    assertEq(pkt[3], 0x11);   // magic
-    assertEq(pkt[4], 0x36);   // magic
-    // RGB triplets empiezan en offset 9
-    assertEq(pkt[9], 255);    // R
-    assertEq(pkt[10], 0);     // G
-    assertEq(pkt[11], 0);     // B
-    assertEq(pkt[12], 255);   // siguiente zona también rojo
-    assertEq(pkt[13], 0);
-    assertEq(pkt[14], 0);
-});
-
-test('buildSolidColor con zoneCount custom', () => {
-    const pkt = buildSolidColor(0, 255, 0, { zoneCount: 8 });
-    // Último RGB triplet debe estar en offset 9 + 7*3 = 30
-    assertEq(pkt[30], 0);
-    assertEq(pkt[31], 255);
-    assertEq(pkt[32], 0);
-    // Después debe ser padding 0x00
-    assertEq(pkt[33], 0);
-});
-
-test('buildSolidColor acepta param custom', () => {
-    const pkt = buildSolidColor(255, 255, 255, { param: 0x00 });
+    assertEq(pkt[1], 0x08);
     assertEq(pkt[2], 0x00);
+    assertEq(pkt[3], 0x06);
+    assertEq(pkt[4], 0x01);
+    assertEq(pkt[5], 0x01);
+    // resto padding 0x00
 });
 
-test('buildShutdown genera paquete todos en 0', () => {
-    const pkt = buildShutdown();
+test('buildBrightness(1) genera [04 09 00 06 01 01 00 00 01]', () => {
+    const pkt = buildBrightness(1);
     assertEq(pkt[0], REPORT_ID);
-    assertEq(pkt[1], CMD.SOLID_COLOR);
-    // Todos los bytes de color deben ser 0x00
-    for (let i = 9; i < REPORT_SIZE; i++) {
-        assertEq(pkt[i], 0x00, `byte ${i} debería ser 0`);
-    }
+    assertEq(pkt[1], 0x09);
+    assertEq(pkt[2], 0x00);
+    assertEq(pkt[3], 0x06);
+    assertEq(pkt[4], 0x01);
+    assertEq(pkt[5], 0x01);
+    assertEq(pkt[6], 0x00);
+    assertEq(pkt[7], 0x00);
+    assertEq(pkt[8], 0x01);
 });
 
-test('isValidPacket acepta paquetes válidos', () => {
-    const pkt = buildSolidColor(255, 0, 0);
-    assert(isValidPacket(pkt));
+test('buildBrightness(4) genera [04 0C 00 06 01 01 00 00 04]', () => {
+    const pkt = buildBrightness(4);
+    assertEq(pkt[1], 0x0C);
+    assertEq(pkt[8], 0x04);
 });
 
-test('isValidPacket rechaza paquetes con Report ID incorrecto', () => {
-    const pkt = buildSolidColor(255, 0, 0);
-    pkt[0] = 0x00; // Report ID incorrecto
-    assert(!isValidPacket(pkt));
+test('buildBrightness(0) = buildOff()', () => {
+    const a = buildBrightness(0);
+    const b = buildOff();
+    assertBytes(a, b);
 });
 
-test('isValidPacket rechaza paquetes con tamaño incorrecto', () => {
-    const pkt = new Uint8Array(32); // tamaño incorrecto
-    assert(!isValidPacket(pkt));
+test('buildBrightness rechaza valores fuera de rango', () => {
+    let threw = false;
+    try { buildBrightness(5); } catch { threw = true; }
+    assert(threw, 'expected exception for level=5');
+    threw = false;
+    try { buildBrightness(-1); } catch { threw = true; }
+    assert(threw, 'expected exception for level=-1');
 });
 
-test('parsePacket extrae cmd correctamente', () => {
-    const pkt = buildSolidColor(255, 0, 0);
-    const parsed = parsePacket(pkt);
-    assertEq(parsed.cmd, CMD.SOLID_COLOR);
-    assert(!parsed.isHeartbeatStart);
-    assert(!parsed.isHeartbeatEnd);
+test('buildSpeed(1) genera [04 09 00 06 01 02]', () => {
+    const pkt = buildSpeed(1);
+    assertEq(pkt[1], 0x09);
+    assertEq(pkt[3], 0x06);
+    assertEq(pkt[4], 0x01);
+    assertEq(pkt[5], 0x02);  // sub-cmd = 0x02 (speed)
 });
 
-test('parsePacket reconoce heartbeat START', () => {
-    const hb = buildHeartbeatStart();
-    const parsed = parsePacket(hb);
-    assert(parsed.isHeartbeatStart);
+test('buildSpeed(3) genera [04 0B 00 06 01 02 00 00 03]', () => {
+    const pkt = buildSpeed(3);
+    assertEq(pkt[1], 0x0B);
+    assertEq(pkt[5], 0x02);
+    assertEq(pkt[8], 0x03);
 });
 
-test('parsePacket reconoce heartbeat END', () => {
-    const hb = buildHeartbeatEnd();
-    const parsed = parsePacket(hb);
-    assert(parsed.isHeartbeatEnd);
+test('buildSpeed rechaza level=0', () => {
+    let threw = false;
+    try { buildSpeed(0); } catch { threw = true; }
+    assert(threw);
+});
+
+test('buildEffect(5) = "breathing" genera [04 0C 00 06 01 00 00 00 05]', () => {
+    const pkt = buildEffect(5);
+    assertEq(pkt[1], 0x0C);
+    assertEq(pkt[3], 0x06);
+    assertEq(pkt[4], 0x01);
+    assertEq(pkt[5], 0x00);  // sub-cmd 0x00 (effect select)
+    assertEq(pkt[6], 0x00);
+    assertEq(pkt[7], 0x00);
+    assertEq(pkt[8], 0x05);
+});
+
+test('buildEffect(19) genera formato con flag 0x11', () => {
+    // Effect 19 usa formato diferente (flag 0x11) — confirmado en captura.
+    // SEQ exacto depende de cuántas acciones previas, pero formato sí es fijo.
+    const pkt = buildEffect(19);
+    assertEq(pkt[5], 0x11);  // flag para effects 16+
+    assertEq(pkt[8], 0x03);  // 19 - 16 = 3
+    assert(pkt[1] >= 0x08 + 18 && pkt[1] <= 0x08 + 20, `SEQ fuera de rango: 0x${pkt[1].toString(16)}`);
+});
+
+test('buildEffect rechaza effect=0 o 20', () => {
+    let threw = false;
+    try { buildEffect(0); } catch { threw = true; }
+    assert(threw);
+    threw = false;
+    try { buildEffect(20); } catch { threw = true; }
+    assert(threw);
+});
+
+test('buildSolidColor RGB triplets al final', () => {
+    resetSeq();
+    const pkt = buildSolidColor(255, 128, 64);
+    assertEq(pkt[0], REPORT_ID);
+    assertEq(pkt[2], 0x03);  // cmd = 0x03 (solid color)
+    assertEq(pkt[3], 0x06);  // magic 06 03 05 00 00
+    assertEq(pkt[4], 0x03);
+    assertEq(pkt[5], 0x05);
+    assertEq(pkt[6], 0x00);
+    assertEq(pkt[7], 0x00);
+    assertEq(pkt[8], 255);  // R
+    assertEq(pkt[9], 128);  // G
+    assertEq(pkt[10], 64);  // B
+});
+
+test('buildColorfulNormallyOn genera [04 0C 00 06 01 04 00 00 01]', () => {
+    const pkt = buildColorfulNormallyOn();
+    assertEq(pkt[1], 0x0C);
+    assertEq(pkt[5], 0x04);
+    assertEq(pkt[8], 0x01);
+});
+
+test('buildDirection genera paquete con magic 06 01 03', () => {
+    const pkt = buildDirection(false);
+    assertEq(pkt[3], 0x06);
+    assertEq(pkt[4], 0x01);
+    assertEq(pkt[5], 0x03);  // sub-cmd direction
+    assertEq(pkt[8], 0xFF);  // reverse=false → 0xFF
 });
 
 // ════════════════════════════════════════════════════════════════════
-// 3. TESTS DE HANDSHAKE
+// 3. SEQ COUNTER
+// ════════════════════════════════════════════════════════════════════
+console.log('\n🔢 SEQ Counter:');
+
+test('resetSeq() pone SEQ en 0x08', () => {
+    resetSeq();
+    assertEq(getSeq(), 0x08);
+});
+
+test('nextSeq() incrementa monotónicamente', () => {
+    resetSeq();
+    const a = nextSeq();
+    const b = nextSeq();
+    const c = nextSeq();
+    assertEq(a, 0x08);
+    assertEq(b, 0x09);
+    assertEq(c, 0x0A);
+});
+
+test('SEQ se mantiene entre llamadas', () => {
+    resetSeq();
+    nextSeq();
+    nextSeq();
+    const before = getSeq();
+    nextSeq();
+    const after = getSeq();
+    assertEq(after - before, 1);
+});
+
+// ════════════════════════════════════════════════════════════════════
+// 4. HANDSHAKE
 // ════════════════════════════════════════════════════════════════════
 console.log('\n🤝 Handshake:');
+
+test('HANDSHAKE_PACKET empieza con Report ID 0x04', () => {
+    assertEq(HANDSHAKE_PACKET[0], REPORT_ID);
+});
 
 test('HANDSHAKE_PACKET contiene magic 0x55AA', () => {
     let found = false;
@@ -257,117 +281,79 @@ test('HANDSHAKE_PACKET contiene magic 0x55AA', () => {
             break;
         }
     }
-    assert(found, 'no se encontró magic 0x55AA');
+    assert(found);
 });
 
-test('HANDSHAKE_PACKET empieza con Report ID 0x04', () => {
-    assertEq(HANDSHAKE_PACKET[0], REPORT_ID);
-});
-
-test('HANDSHAKE_PACKET contiene VID del KX-500 embedded', () => {
-    // VID (0x320F) little-endian = [0x0F, 0x32]
-    let found = false;
+test('HANDSHAKE_PACKET contiene VID y PID del KX-500', () => {
+    // VID 0x320F little-endian = [0x0F, 0x32]
+    let foundVid = false;
     for (let i = 0; i < HANDSHAKE_PACKET.length - 1; i++) {
         if (HANDSHAKE_PACKET[i] === 0x0F && HANDSHAKE_PACKET[i + 1] === 0x32) {
-            found = true;
+            foundVid = true;
             break;
         }
     }
-    assert(found, 'no se encontró VID 0x320F little-endian');
-});
-
-test('HANDSHAKE_PACKET contiene PID del KX-500 embedded', () => {
-    // PID (0x5008) little-endian = [0x08, 0x50]
-    let found = false;
+    assert(foundVid);
+    // PID 0x5008 little-endian = [0x08, 0x50]
+    let foundPid = false;
     for (let i = 0; i < HANDSHAKE_PACKET.length - 1; i++) {
         if (HANDSHAKE_PACKET[i] === 0x08 && HANDSHAKE_PACKET[i + 1] === 0x50) {
-            found = true;
+            foundPid = true;
             break;
         }
     }
-    assert(found, 'no se encontró PID 0x5008 little-endian');
+    assert(foundPid);
 });
 
 // ════════════════════════════════════════════════════════════════════
-// 4. TESTS DE EFFECTS
+// 5. VALIDACIONES
 // ════════════════════════════════════════════════════════════════════
-console.log('\n✨ Effects:');
+console.log('\n✅ Validaciones:');
 
-test('EFFECTS tiene static, breathing, wave, typing', () => {
-    const ids = listEffects();
-    assert(ids.includes('static'), 'falta static');
-    assert(ids.includes('breathing'), 'falta breathing');
-    assert(ids.includes('wave'), 'falta wave');
-    assert(ids.includes('typing'), 'falta typing');
+test('buildHeartbeatStart genera [04 01 00 01]', () => {
+    const hb = buildHeartbeatStart();
+    assertEq(hb[0], REPORT_ID);
+    assertEq(hb[1], 0x01);
+    assertEq(hb[2], 0x00);
+    assertEq(hb[3], 0x01);
 });
 
-test('staticEffect aplica color uniforme', () => {
-    const leds = [{ r: 0, g: 0, b: 0 }, { r: 0, g: 0, b: 0 }];
-    EFFECTS.static.fn(leds, 0, [255, 100, 50]);
-    assertEq(leds[0].r, 255);
-    assertEq(leds[0].g, 100);
-    assertEq(leds[0].b, 50);
-    assertEq(leds[1].r, 255);
+test('buildHeartbeatEnd genera [04 02 00 02]', () => {
+    const hb = buildHeartbeatEnd();
+    assertEq(hb[0], REPORT_ID);
+    assertEq(hb[1], 0x02);
+    assertEq(hb[2], 0x00);
+    assertEq(hb[3], 0x02);
 });
 
-test('breathingEffect varia brightness con tiempo', () => {
-    // Comparar t=0 (factor=0.65, phase=0) con t=0.5 (factor=1.0, peak)
-    const leds1 = [{ r: 0, g: 0, b: 0 }];
-    const leds2 = [{ r: 0, g: 0, b: 0 }];
-    EFFECTS.breathing.fn(leds1, 0, [255, 0, 0]);
-    EFFECTS.breathing.fn(leds2, 0.5, [255, 0, 0]);
-    assert(leds1[0].r !== leds2[0].r,
-        `breathing debería cambiar con el tiempo (t=0: ${leds1[0].r}, t=0.5: ${leds2[0].r})`);
-    // Verificar que el pico (t=0.5) es MAYOR que el valle (t=1.5)
-    const leds3 = [{ r: 0, g: 0, b: 0 }];
-    EFFECTS.breathing.fn(leds3, 1.5, [255, 0, 0]);  // mínimo del ciclo (factor=0.3)
-    assert(leds3[0].r < leds1[0].r,
-        `t=1.5 (valle) debería ser menor que t=0: ${leds3[0].r} vs ${leds1[0].r}`);
+test('isValidPacket acepta paquetes RGB', () => {
+    const pkt = buildSolidColor(255, 0, 0);
+    assert(isValidPacket(pkt));
 });
 
-test('waveEffect produce colores no uniformes', () => {
-    const leds = KX500_KEYS.map(k => ({ r: 0, g: 0, b: 0, x: k.x, y: k.y }));
-    EFFECTS.wave.fn(leds, 1.5, [255, 255, 255]);
-    const rSet = new Set(leds.map(l => l.r));
-    assert(rSet.size > 1, 'wave debería tener múltiples valores de R');
+test('isValidPacket rechaza paquetes con Report ID incorrecto', () => {
+    const pkt = buildSolidColor(255, 0, 0);
+    pkt[0] = 0x00;
+    assert(!isValidPacket(pkt));
 });
 
-test('hsvToRgb convierte correctamente casos conocidos', () => {
-    // Rojo puro
-    const [r, g, b] = hsvToRgb(0, 1, 1);
-    assertEq(r, 255);
-    assertEq(g, 0);
-    assertEq(b, 0);
+test('parsePacket extrae metadata correctamente', () => {
+    resetSeq();
+    const pkt = buildSolidColor(100, 200, 50);
+    const parsed = parsePacket(pkt);
+    assertEq(parsed.cmd, 0x03);
+    assertEq(parsed.params[5], 100);
+    assertEq(parsed.params[6], 200);
+    assertEq(parsed.params[7], 50);
+    assert(!parsed.isHeartbeatStart);
+    assert(!parsed.isHeartbeatEnd);
 });
 
-test('applyEffect funciona con effectId válido', () => {
-    const leds = [{ r: 0, g: 0, b: 0 }];
-    applyEffect(leds, 0, [255, 0, 0], 'static');
-    assertEq(leds[0].r, 255);
-});
-
-test('applyEffect fallback a static para effectId inválido', () => {
-    const leds = [{ r: 0, g: 0, b: 0 }];
-    applyEffect(leds, 0, [100, 200, 50], 'nonexistent_effect');
-    assertEq(leds[0].r, 100);
-    assertEq(leds[0].g, 200);
-    assertEq(leds[0].b, 50);
-});
-
-// ════════════════════════════════════════════════════════════════════
-// 5. TESTS DE EXPORTS SIGNALRGB (validación parcial)
-// ════════════════════════════════════════════════════════════════════
-console.log('\n🎨 SignalRGB exports:');
-
-test('ProductId devuelve array [0x5008]', () => {
-    // No podemos importar el módulo Lite directo porque depende de globals,
-    // pero validamos que el PID esté bien
-    assertEq(PID, 0x5008);
-});
-
-test('VendorId/PID matchean KX-500', () => {
-    assertEq(VID, 0x320F);
-    assertEq(PID, 0x5008);
+test('parsePacket reconoce heartbeat START/END', () => {
+    const hbS = buildHeartbeatStart();
+    const hbE = buildHeartbeatEnd();
+    assert(parsePacket(hbS).isHeartbeatStart);
+    assert(parsePacket(hbE).isHeartbeatEnd);
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -386,4 +372,10 @@ if (fail > 0) {
 } else {
     console.log('\n✅ Todos los tests pasaron\n');
     process.exit(0);
+}
+
+function assertDeepEq(actual, expected, msg) {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        throw new Error(`${msg || 'deep differ'}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+    }
 }

@@ -1,19 +1,19 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Plugin — Lite v0.2.0                          ║
+ * ║  KX-500 SignalRGB Plugin — Lite v0.3.0                          ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v0.2.0 (2026-08-26) — protocolo real basado en USBPcap:         ║
- * ║    - send_report (Feature) → write (Output Report)               ║
- * ║    - 520B → 64B (paquete HID real)                              ║
- * ║    - Header 06 08 00 00 01 00 7A 01 → Report ID 0x04 + comando    ║
- * ║    - Heartbeat wrapper: 04 01 00 01 ... 04 02 00 02              ║
- * ║    - Handshake 04 A2 03 04 2C 00 00 00 55 AA FF ... en Initialize║
- * ║    - Settings: brightness, effect, effectColor, LightingMode     ║
+ * ║  v0.3.0 (2026-08-26) — comandos REALES confirmados con           ║
+ * ║    capturas USBPcap individuales:                                ║
+ * ║    - OFF:        04 08 00 06 01 01                                ║
+ * ║    - Brightness: 04 [8+N] 00 06 01 01 00 00 N                   ║
+ * ║    - Speed:      04 [8+N] 00 06 01 02 00 00 N                   ║
+ * ║    - Effect:     04 [8+N] 00 06 01 00 00 00 N                   ║
+ * ║    - Solid RGB:  04 [SEQ] [VAR] 06 03 05 00 00 R G B            ║
+ * ║    - Handshake:  04 A2 03 04 2C 00 00 00 55 AA ...               ║
  * ║                                                                  ║
- * ║  ⚠️  Los comandos exactos de "solid color", "per-key", "effect"  ║
- * ║  son BEST-GUESS basados en una captura mixta. Pendiente          ║
- * ║  confirmación con capturas individuales (ver PROTOCOL.md).       ║
+ * ║  Cada acción entre heartbeat START/END (04 01 00 01 / 04 02 00 02)║
+ * ║  SEQ counter local (arranca en 0x08, incrementa por acción)      ║
  * ║                                                                  ║
  * ║  Repo: https://github.com/RedFenix-Estudio/KX-500-Plugin         ║
  * ║  Protocolo: ver PROTOCOL.md                                      ║
@@ -31,23 +31,129 @@ const DOCUMENTATION_URL = "https://github.com/RedFenix-Estudio/KX-500-Plugin";
 const DEVICE_NAME = "Checkpoint KX-500 (NA-KB-1001)";
 
 // ════════════════════════════════════════════════════════════════════
-// HID — VID/PID + protocolo RGB confirmado por USBPcap
+// HID
 // ════════════════════════════════════════════════════════════════════
 const KX500_VID = 0x320F;
 const KX500_PID = 0x5008;
-
-// Endpoint HID RGB: interface 1, endpoint 0x03 OUT (Interrupt)
-// (declarado como "HID Mouse" por el fabricante — quirk de KX-500)
 const KX500_RGB_INTERFACE = 1;
-const RGB_EP_OUT = 0x03;       // OUT endpoint para comandos RGB
-const HID_REPORT_SIZE = 64;    // tamaño fijo del paquete HID RGB
-const RGB_REPORT_ID = 0x04;    // primer byte de TODO paquete RGB
+const HID_REPORT_SIZE = 64;
+const RGB_REPORT_ID = 0x04;
 
 // ════════════════════════════════════════════════════════════════════
-// LAYOUT — 104 keys full-size US ANSI (sin cambios)
+// PROTOCOLO REAL KX-500 (v0.3.0 — confirmado por 7 capturas individuales)
+//
+// Heartbeat (siempre antes y después de cada acción):
+//   START: [04 01 00 01]
+//   END:   [04 02 00 02]
+//
+// Estructura acción:
+//   [04] [SEQ] [CMD] [PARAMETROS...] [pad 0x00]
+//
+// SEQ arranca en 0x08 y se incrementa monotónicamente por cada acción.
+// ════════════════════════════════════════════════════════════════════
+
+// Handshake packet — visto en captura mixta al abrir el driver oficial
+const HANDSHAKE = [
+    0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
+    0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
+    0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+    0x11, 0x12, 0x14
+];
+
+// SEQ counter local (arranca en 0x08 después de handshake)
+let _seqCounter = 0x08;
+
+function nextSeq() {
+    const s = _seqCounter & 0xFF;
+    _seqCounter = (_seqCounter + 1) & 0xFF;
+    return s;
+}
+
+function resetSeq() {
+    _seqCounter = 0x08;
+}
+
+/**
+ * Construye un paquete HID RGB de 64 bytes.
+ * @param {number} seq - byte SEQ (0x08+)
+ * @param {number} cmd - byte de comando
+ * @param {number[]} params - parámetros
+ */
+function buildPacket(seq, cmd, params = []) {
+    const packet = [RGB_REPORT_ID, seq & 0xFF, cmd & 0xFF, ...params];
+    while (packet.length < HID_REPORT_SIZE) {
+        packet.push(0x00);
+    }
+    return packet.slice(0, HID_REPORT_SIZE);
+}
+
+/**
+ * Envía una acción envuelta en heartbeat START/END.
+ */
+function sendAction(seq, cmd, params = []) {
+    try {
+        const packet = buildPacket(seq, cmd, params);
+        device.write([RGB_REPORT_ID, 0x01, 0x00, 0x01]);   // START
+        device.pause(1);
+        device.write(packet);
+        device.pause(1);
+        device.write([RGB_REPORT_ID, 0x02, 0x00, 0x02]);   // END
+        device.pause(1);
+    } catch (err) {
+        device.log(`[KX500] sendAction error: ${err.message}`);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ACCIONES DE ALTO NIVEL (mapeo a bytes del firmware)
+// ════════════════════════════════════════════════════════════════════
+
+/** Apagar todos los LEDs */
+function actionOff() {
+    sendAction(nextSeq(), 0x00, [0x06, 0x01, 0x01]);
+}
+
+/** Set brightness (0-4) */
+function actionBrightness(level) {
+    if (level < 0 || level > 4) return;
+    if (level === 0) {
+        // Caso especial: sin padding
+        sendAction(0x08, 0x00, [0x06, 0x01, 0x01]);
+    } else {
+        sendAction(0x08 + level, 0x00, [0x06, 0x01, 0x01, 0x00, 0x00, level]);
+    }
+}
+
+/** Set velocidad (1-4) */
+function actionSpeed(level) {
+    if (level < 1 || level > 4) return;
+    sendAction(0x08 + level, 0x00, [0x06, 0x01, 0x02, 0x00, 0x00, level]);
+}
+
+/** Seleccionar effect por número (1-19) */
+function actionEffect(effectNum) {
+    if (effectNum < 1 || effectNum > 19) return;
+    sendAction(0x08 + effectNum, 0x00, [0x06, 0x01, 0x00, 0x00, 0x00, effectNum]);
+}
+
+/** Set solid color RGB arbitrario (cualquier color) */
+function actionSolidColor(r, g, b) {
+    const seq = nextSeq();
+    sendAction(seq, 0x03, [0x06, 0x03, 0x05, 0x00, 0x00, r & 0xFF, g & 0xFF, b & 0xFF]);
+}
+
+/** Activar efecto breathing (effect #5) */
+function actionBreathing() {
+    sendAction(nextSeq(), 0x00, [0x06, 0x01, 0x04]);  // Pre-action (cambiar a effect mode)
+    sendAction(nextSeq(), 0x00, [0x06, 0x01, 0x00, 0x00, 0x00, 0x05]);  // Select effect 5
+}
+
+// ════════════════════════════════════════════════════════════════════
+// LAYOUT — 104 keys full-size US ANSI
 // ════════════════════════════════════════════════════════════════════
 const KX500_KEYS = [
-    // Fila 0: Function row
     { name: 'Esc', x: 0, y: 0, w: 1, h: 1 },
     { name: 'F1', x: 2, y: 0, w: 1, h: 1 }, { name: 'F2', x: 3, y: 0, w: 1, h: 1 },
     { name: 'F3', x: 4, y: 0, w: 1, h: 1 }, { name: 'F4', x: 5, y: 0, w: 1, h: 1 },
@@ -58,8 +164,6 @@ const KX500_KEYS = [
     { name: 'Print Screen', x: 15.5, y: 0, w: 1, h: 1 },
     { name: 'Scroll Lock', x: 16.5, y: 0, w: 1, h: 1 },
     { name: 'Pause Break', x: 17.5, y: 0, w: 1, h: 1 },
-
-    // Fila 1: Number row + nav cluster
     { name: '`', x: 0, y: 1, w: 1, h: 1 },
     { name: '1', x: 1, y: 1, w: 1, h: 1 }, { name: '2', x: 2, y: 1, w: 1, h: 1 },
     { name: '3', x: 3, y: 1, w: 1, h: 1 }, { name: '4', x: 4, y: 1, w: 1, h: 1 },
@@ -71,8 +175,6 @@ const KX500_KEYS = [
     { name: 'Insert', x: 15.5, y: 1, w: 1, h: 1 },
     { name: 'Home', x: 16.5, y: 1, w: 1, h: 1 },
     { name: 'Page Up', x: 17.5, y: 1, w: 1, h: 1 },
-
-    // Fila 2: QWERTY
     { name: 'Tab', x: 0, y: 2, w: 1.5, h: 1 },
     { name: 'Q', x: 1.5, y: 2, w: 1, h: 1 }, { name: 'W', x: 2.5, y: 2, w: 1, h: 1 },
     { name: 'E', x: 3.5, y: 2, w: 1, h: 1 }, { name: 'R', x: 4.5, y: 2, w: 1, h: 1 },
@@ -84,8 +186,6 @@ const KX500_KEYS = [
     { name: 'Del', x: 15.5, y: 2, w: 1, h: 1 },
     { name: 'End', x: 16.5, y: 2, w: 1, h: 1 },
     { name: 'Page Down', x: 17.5, y: 2, w: 1, h: 1 },
-
-    // Fila 3: Home row
     { name: 'Caps Lock', x: 0, y: 3, w: 1.75, h: 1 },
     { name: 'A', x: 1.75, y: 3, w: 1, h: 1 }, { name: 'S', x: 2.75, y: 3, w: 1, h: 1 },
     { name: 'D', x: 3.75, y: 3, w: 1, h: 1 }, { name: 'F', x: 4.75, y: 3, w: 1, h: 1 },
@@ -94,8 +194,6 @@ const KX500_KEYS = [
     { name: 'L', x: 9.75, y: 3, w: 1, h: 1 },
     { name: ';', x: 10.75, y: 3, w: 1, h: 1 }, { name: '\u2019', x: 11.75, y: 3, w: 1, h: 1 },
     { name: 'Enter', x: 12.75, y: 3, w: 2.25, h: 1 },
-
-    // Fila 4: Bottom row
     { name: 'Left Shift', x: 0, y: 4, w: 2.25, h: 1 },
     { name: 'Z', x: 2.25, y: 4, w: 1, h: 1 }, { name: 'X', x: 3.25, y: 4, w: 1, h: 1 },
     { name: 'C', x: 4.25, y: 4, w: 1, h: 1 }, { name: 'V', x: 5.25, y: 4, w: 1, h: 1 },
@@ -105,8 +203,6 @@ const KX500_KEYS = [
     { name: '/', x: 11.25, y: 4, w: 1, h: 1 },
     { name: 'Right Shift', x: 12.25, y: 4, w: 2.75, h: 1 },
     { name: 'Up Arrow', x: 16.5, y: 4, w: 1, h: 1 },
-
-    // Fila 5: Space row
     { name: 'Left Ctrl', x: 0, y: 5, w: 1.25, h: 1 },
     { name: 'Left Win', x: 1.25, y: 5, w: 1.25, h: 1 },
     { name: 'Left Alt', x: 2.5, y: 5, w: 1.25, h: 1 },
@@ -118,8 +214,6 @@ const KX500_KEYS = [
     { name: 'Left Arrow', x: 15.5, y: 5, w: 1, h: 1 },
     { name: 'Down Arrow', x: 16.5, y: 5, w: 1, h: 1 },
     { name: 'Right Arrow', x: 17.5, y: 5, w: 1, h: 1 },
-
-    // Numpad
     { name: 'NumLock', x: 19, y: 1, w: 1, h: 1 },
     { name: 'Num /', x: 20, y: 1, w: 1, h: 1 },
     { name: 'Num *', x: 21, y: 1, w: 1, h: 1 },
@@ -149,125 +243,7 @@ const LAYOUT_SIZE = (function () {
 })();
 
 // ════════════════════════════════════════════════════════════════════
-// PROTOCOLO REAL KX-500 (confirmado por USBPcap 2026-08-26)
-//
-// Estructura universal:
-//   [0x04] [CMD] [PARAMS...] [pad 0x00 hasta 64 bytes]
-//
-// Heartbeat wrapper (siempre antes y después de cada comando):
-//   [04 01 00 01 ... pad]   ← START
-//   [comando real]
-//   [04 02 00 02 ... pad]   ← END
-// ════════════════════════════════════════════════════════════════════
-
-// Heartbeat packets (vistos 46x en captura mixta)
-const HB_START = [0x04, 0x01, 0x00, 0x01];
-const HB_END = [0x04, 0x02, 0x00, 0x02];
-
-// Handshake / init packet (visto 3x en captura mixta — se manda al abrir el driver)
-const HANDSHAKE = [
-    0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
-    0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
-    0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-    0x11, 0x12, 0x14
-];
-
-// Comandos identificados en captura mixta (best-effort, no 100% confirmados)
-const COMMANDS = {
-    // 04 22 = "set solid color" probable (visto con RGB packed)
-    // header: [04 22 12 11 36 00 00 00 00] + RGB data
-    SOLID_COLOR: 0x22,
-
-    // 04 A2 = handshake (ver HANDSHAKE)
-    HANDSHAKE: 0xA2,
-
-    // 04 17 = "set reactive/brightness pattern" (probable, visto con packed bytes)
-    PATTERN: 0x17,
-
-    // 04 01 = START heartbeat
-    HB_START_CMD: 0x01,
-
-    // 04 02 = END heartbeat
-    HB_END_CMD: 0x02,
-};
-
-/**
- * Construye un paquete HID RGB de 64 bytes con Report ID 0x04.
- * @param {number} cmd - byte de comando (0x01..0xFF)
- * @param {number[]} params - bytes de parámetros (sin Report ID)
- * @returns {number[]} paquete de exactamente 64 bytes
- */
-function buildRgbPacket(cmd, params = []) {
-    const packet = [RGB_REPORT_ID, cmd & 0xFF, ...params];
-    while (packet.length < HID_REPORT_SIZE) {
-        packet.push(0x00);
-    }
-    return packet.slice(0, HID_REPORT_SIZE);
-}
-
-/**
- * Construye un comando de "solid color" (todos los keys del mismo color).
- *
- * Best-effort basado en `04 22 12 11 36 00 00 00 00 FF 00 00 FF 00 00 ...`
- * visto en captura mixta. Estructura:
- *
- *   [04] [22] [12] [11] [36] [00 00 00 00] [RGB triplets repetidos N veces]
- *
- * El `12` después de `22` puede ser un parámetro (length? brightness? count?).
- * Los `11 36` parecen fijos (magic constant del protocolo).
- *
- * @param {number} r,g,b - color 0..255
- * @param {number} [zoneCount=16] - cantidad de zonas/keys a setear (16 visto en captura)
- * @param {number} [param=0x12] - byte de parámetro (default visto en captura)
- */
-function buildSolidColorPacket(r, g, b, zoneCount = 16, param = 0x12) {
-    const params = [
-        param & 0xFF,
-        0x11,    // magic constant
-        0x36,    // magic constant
-        0x00, 0x00, 0x00, 0x00,    // 4 bytes de padding fijo
-    ];
-    // Empaquetar color RGB repetido zoneCount veces
-    for (let i = 0; i < zoneCount; i++) {
-        params.push(r & 0xFF);
-        params.push(g & 0xFF);
-        params.push(b & 0xFF);
-    }
-    return buildRgbPacket(COMMANDS.SOLID_COLOR, params);
-}
-
-/**
- * Construye un comando "shutdown" (todos los LEDs apagados).
- */
-function buildShutdownPacket() {
-    return buildRgbPacket(COMMANDS.SOLID_COLOR, [
-        0x00,    // param = 0 (todos apagados)
-        0x11, 0x36,
-        0x00, 0x00, 0x00, 0x00,
-    ]);
-}
-
-/**
- * Envía un paquete con heartbeat wrapper (START + cmd + END).
- * @param {number[]} cmdPacket - paquete de 64 bytes con el comando real
- */
-function sendWithHeartbeat(cmdPacket) {
-    try {
-        device.write(HB_START);
-        device.pause(1);
-        device.write(cmdPacket);
-        device.pause(1);
-        device.write(HB_END);
-        device.pause(1);
-    } catch (err) {
-        device.log(`[KX500] sendWithHeartbeat error: ${err.message}`);
-    }
-}
-
-// ════════════════════════════════════════════════════════════════════
-// EFFECTS — Override de canvas para LightingMode=Forced
+// EFFECTS
 // ════════════════════════════════════════════════════════════════════
 function hsvToRgb(h, s, v) {
     let r, g, b;
@@ -322,14 +298,13 @@ function applyForcedEffect(ledsArr, time, color, effectId) {
             break;
         }
         default: {
-            // 'static' y fallback — color sólido
             for (const led of ledsArr) { led.r = r; led.g = g; led.b = b; }
         }
     }
 }
 
 // ════════════════════════════════════════════════════════════════════
-// FRAMEBUFFER INTERNO
+// FRAMEBUFFER
 // ════════════════════════════════════════════════════════════════════
 let ledBuffer = [];
 let lastRenderTime = 0;
@@ -361,20 +336,10 @@ export function ImageUrl() {
     return "https://raw.githubusercontent.com/RedFenix-Estudio/KX-500-Plugin/main/assets/KX-500.png";
 }
 
-/**
- * Validate() — matchear la interface 1 (HID Mouse) donde está el canal RGB.
- * El KX-500 declara el canal RGB como "HID Mouse" (bInterfaceProtocol=0x02)
- * pero con bInterfaceClass=0x03 (HID). Filtramos por interface number.
- *
- * Si SignalRGB te pide "no encuentra el device", quizás el uso es FF1C:0092
- * o 0x0001:0x0006. Probar comentar/descomentar líneas.
- */
 export function Validate(endpoint) {
     return endpoint.interface === KX500_RGB_INTERFACE
-        && endpoint.usage_page === 0x0001   // HID Mouse interface
-        && endpoint.usage === 0x0002;       // Mouse
-    // Alternativa si no matchea: probar
-    //   return endpoint.interface === 1 && endpoint.vendor_id === KX500_VID;
+        && endpoint.usage_page === 0x0001
+        && endpoint.usage === 0x0002;
 }
 
 export function ControllableParameters() {
@@ -398,11 +363,12 @@ export function ControllableParameters() {
         {
             property: "brightness",
             group: "lighting",
-            label: "Brightness",
+            label: "Brightness (0-4)",
+            description: "Nivel de brillo (0 = apagado, 4 = máximo). Solo aplica cuando cambia; no reenvía continuamente.",
             type: "number",
             min: "0",
-            max: "100",
-            default: "100",
+            max: "4",
+            default: "4",
         },
         {
             property: "shutdownColor",
@@ -440,6 +406,7 @@ export function Initialize() {
         x: k.x, y: k.y, w: k.w, h: k.h,
     }));
     lastRenderTime = Date.now();
+    resetSeq();
 
     try {
         device.setName(DEVICE_NAME);
@@ -454,7 +421,7 @@ export function Initialize() {
         device.log(`[KX500] setName/setSize/setControllableLeds failed: ${err.message}`);
     }
 
-    // 1. Mandar handshake (visto en captura mixta al abrir el driver)
+    // Mandar handshake
     try {
         device.write(HANDSHAKE);
         device.pause(5);
@@ -463,17 +430,17 @@ export function Initialize() {
         device.log(`[KX500] Handshake failed: ${err.message}`);
     }
 
-    // 2. Apagar LEDs al iniciar (para limpiar estado)
+    // Apagar LEDs al iniciar
     try {
-        sendWithHeartbeat(buildShutdownPacket());
-        device.log(`[KX500] Initial shutdown packet sent`);
+        actionOff();
+        device.log(`[KX500] Initial OFF sent`);
     } catch (err) {
-        device.log(`[KX500] Initial shutdown failed: ${err.message}`);
+        device.log(`[KX500] Initial OFF failed: ${err.message}`);
     }
 
-    device.log(`[KX500] Author: ${AUTHOR} (${AUTHOR_GITHUB_URL})`);
-    device.log(`[KX500] Docs: ${DOCUMENTATION_URL}`);
-    device.log(`[KX500] Protocol: HID Output Report, 64B, Report ID 0x04 (ver PROTOCOL.md)`);
+    device.log(`[KX500] Author: ${AUTHOR}`);
+    device.log(`[KX500] Protocol: HID Output Report, 64B, Report ID 0x04`);
+    device.log(`[KX500] Comandos confirmados: OFF, Brightness(0-4), Speed(1-4), Effect(1-19), SolidColor(RGB)`);
 }
 
 export function Render() {
@@ -489,11 +456,10 @@ export function Render() {
     }
 
     if (useColor) {
-        // Modo Forced — usar effect interno
         const effectId = (typeof effect !== "undefined" && effect) ? effect : "static";
         applyForcedEffect(ledBuffer, time, useColor, effectId);
     } else {
-        // Modo Canvas — leer device.color(x,y) por key
+        // Canvas — leer color por key
         for (let i = 0; i < ledBuffer.length; i++) {
             const led = ledBuffer[i];
             const c = device.color(led.x, led.y);
@@ -503,45 +469,29 @@ export function Render() {
         }
     }
 
-    // Aplicar brightness
-    const bright = (typeof brightness !== "undefined" ? brightness : 100) / 100;
+    // Promedio de color (el KX-500 parece tener zones, no per-key)
     let avgR = 0, avgG = 0, avgB = 0;
-    if (bright < 1.0) {
-        for (const led of ledBuffer) {
-            led.r = Math.round(led.r * bright);
-            led.g = Math.round(led.g * bright);
-            led.b = Math.round(led.b * bright);
-            avgR += led.r; avgG += led.g; avgB += led.b;
-        }
-        avgR = Math.round(avgR / ledBuffer.length);
-        avgG = Math.round(avgG / ledBuffer.length);
-        avgB = Math.round(avgB / ledBuffer.length);
-    } else {
-        for (const led of ledBuffer) {
-            avgR += led.r; avgG += led.g; avgB += led.b;
-        }
-        avgR = Math.round(avgR / ledBuffer.length);
-        avgG = Math.round(avgG / ledBuffer.length);
-        avgB = Math.round(avgB / ledBuffer.length);
+    for (const led of ledBuffer) {
+        avgR += led.r;
+        avgG += led.g;
+        avgB += led.b;
     }
+    avgR = Math.round(avgR / ledBuffer.length);
+    avgG = Math.round(avgG / ledBuffer.length);
+    avgB = Math.round(avgB / ledBuffer.length);
 
-    // Enviar comando solid color con el promedio (best-effort hasta tener per-zone)
+    // Enviar solid color con el promedio
     try {
-        const packet = buildSolidColorPacket(avgR, avgG, avgB);
-        sendWithHeartbeat(packet);
+        actionSolidColor(avgR, avgG, avgB);
     } catch (err) {
         // Silenciar errores intermitentes
     }
 }
 
 export function Shutdown(SystemSuspending) {
-    const color = SystemSuspending
-        ? "#000000"
-        : (typeof shutdownColor !== "undefined" ? shutdownColor : "#000000");
-
     try {
-        sendWithHeartbeat(buildShutdownPacket());
-        device.log(`[KX500] Shutdown: ${color}`);
+        actionOff();
+        device.log(`[KX500] Shutdown`);
     } catch (err) {
         device.log(`[KX500] Shutdown error: ${err.message}`);
     }
@@ -557,20 +507,20 @@ function hexToRgb(hex) {
     ];
 }
 
-// ════════════════════════════════════════════════════════════════════
-// EXPORTS INTERNOS (para tests offline)
-// ════════════════════════════════════════════════════════════════════
 export {
     KX500_KEYS,
     LAYOUT_SIZE,
     HID_REPORT_SIZE,
     RGB_REPORT_ID,
-    HB_START,
-    HB_END,
     HANDSHAKE,
-    COMMANDS,
-    buildRgbPacket,
-    buildSolidColorPacket,
-    buildShutdownPacket,
-    sendWithHeartbeat,
+    buildPacket,
+    sendAction,
+    nextSeq,
+    resetSeq,
+    actionOff,
+    actionBrightness,
+    actionSpeed,
+    actionEffect,
+    actionSolidColor,
+    actionBreathing,
 };
