@@ -53,7 +53,8 @@ const RGB_REPORT_ID = 0x04;
 // ════════════════════════════════════════════════════════════════════
 
 // Handshake packet — visto en captura mixta al abrir el driver oficial
-const HANDSHAKE = [
+// IMPORTANTE v0.5.2: pad a 64 bytes para evitar desconexión del HID handle
+const HANDSHAKE = padTo64([
     0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
     0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
     0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
@@ -73,6 +74,13 @@ function nextSeq() {
 
 function resetSeq() {
     _seqCounter = 0x08;
+}
+
+// v0.5.2: helper para pad arrays a 64 bytes (HID Output Report size)
+function padTo64(arr) {
+    const out = Array.from(arr);
+    while (out.length < HID_REPORT_SIZE) out.push(0x00);
+    return out.slice(0, HID_REPORT_SIZE);
 }
 
 /**
@@ -99,17 +107,20 @@ function buildPacket(seq, cmd, params = []) {
 function sendAction(seq, cmd, params = []) {
     try {
         const packet = buildPacket(seq, cmd, params);
-        const hbStart = [RGB_REPORT_ID, 0x01, 0x00, 0x01];
-        const hbEnd = [RGB_REPORT_ID, 0x02, 0x00, 0x02];
+        // v0.5.2 FIX: HB_START y HB_END DEBEN ser de 64 bytes (padded).
+        // Antes eran de 4 bytes lo que causaba desconexión del HID handle
+        // (firmware del KX-500 entra en error state con paquetes cortos).
+        const hbStart = padTo64([RGB_REPORT_ID, 0x01, 0x00, 0x01]);
+        const hbEnd = padTo64([RGB_REPORT_ID, 0x02, 0x00, 0x02]);
         device.log(`[KX500] write HB_START (${hbStart.length}B)`);
         device.write(hbStart, hbStart.length);
-        device.pause(10);
+        device.pause(20);
         device.log(`[KX500] write CMD (${packet.length}B): ${Array.from(packet.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}...`);
         device.write(packet, packet.length);
-        device.pause(10);
+        device.pause(20);
         device.log(`[KX500] write HB_END (${hbEnd.length}B)`);
         device.write(hbEnd, hbEnd.length);
-        device.pause(10);
+        device.pause(20);
         return true;
     } catch (err) {
         device.log(`[KX500] sendAction error: ${err.message}`);
