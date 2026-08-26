@@ -548,18 +548,34 @@ export function Render() {
     renderFrameCounter = 0;
 
     // Promedio de color (el KX-500 parece tener zones, no per-key)
-    let avgR = 0, avgG = 0, avgB = 0;
+    let sumR = 0, sumG = 0, sumB = 0;
+    let nonZeroCount = 0;
     for (const led of ledBuffer) {
-        avgR += led.r;
-        avgG += led.g;
-        avgB += led.b;
+        sumR += led.r;
+        sumG += led.g;
+        sumB += led.b;
+        if (led.r > 0 || led.g > 0 || led.b > 0) {
+            nonZeroCount++;
+        }
     }
-    avgR = Math.round(avgR / ledBuffer.length);
-    avgG = Math.round(avgG / ledBuffer.length);
-    avgB = Math.round(avgB / ledBuffer.length);
+    let avgR = Math.round(sumR / ledBuffer.length);
+    let avgG = Math.round(sumG / ledBuffer.length);
+    let avgB = Math.round(sumB / ledBuffer.length);
 
-    // DEBUG v0.4.0: loguear color que se está mandando para diagnóstico
-    device.log(`[KX500] Render: avgR=${avgR} avgG=${avgG} avgB=${avgB}`);
+    // v0.5.0: fallback si el canvas está todo en negro (canvas vacío)
+    // esto pasa cuando SignalRGB no está renderizando un effect todavía.
+    // Usamos el forcedColor como fallback para que el teclado muestre algo.
+    if (nonZeroCount === 0 && typeof forcedColor !== "undefined") {
+        const fb = hexToRgb(forcedColor || "#0099ff");
+        avgR = fb[0];
+        avgG = fb[1];
+        avgB = fb[2];
+    }
+
+    // Log de debug (cada ~30 frames)
+    if (renderFrameCounter === 0) {
+        device.log(`[KX500] Render: avg=(${avgR},${avgG},${avgB}) nonZero=${nonZeroCount}/${ledBuffer.length}`);
+    }
 
     // Enviar solid color con el promedio
     try {
