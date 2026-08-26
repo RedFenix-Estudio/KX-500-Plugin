@@ -18,6 +18,14 @@ global.device = {
             len: wLen,
         });
     },
+    bulk_transfer: (endpoint, data, len) => {
+        writes.push({
+            method: 'bulk_transfer',
+            endpoint: '0x' + endpoint.toString(16),
+            data: Array.from(data).slice(0, 16),
+            len,
+        });
+    },
     notify: () => {},
     color: (x, y) => [128, 64, 32],
 };
@@ -74,6 +82,8 @@ console.log('Writes despues de Initialize:', writes.length, '(esperaba 3: HB_STA
 writes.forEach((w, i) => {
     if (w.method === 'control_transfer') {
         console.log(`  [${i}] control_transfer(bmReqType=0x${w.bmReqType.toString(16)} bReq=0x${w.bReq.toString(16)} wValue=${w.wVal} wIndex=${w.wIdx}): ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
+    } else if (w.method === 'bulk_transfer') {
+        console.log(`  [${i}] bulk_transfer(endpoint=${w.endpoint} len=${w.len}): ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
     } else {
         console.log(`  [${i}] ${w.method}: ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
     }

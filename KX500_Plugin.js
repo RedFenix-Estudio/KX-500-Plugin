@@ -79,28 +79,34 @@ function heartbeatEnd() {
 // ════════════════════════════════════════════════════════════════════
 // RAWUSB + libusb
 // ════════════════════════════════════════════════════════════════════
-// En rawusb mode, device.write() mapea a libusb_interrupt_transfer
-// (o bulk_transfer), que va directo al endpoint del dispositivo.
-// Para el KX-500 esto significa escribir al endpoint 0x03 OUT (interrupt,
-// 64B), que es el mismo que el driver oficial usa via HidD_SetOutputReport
-// internamente. Esto bypassa los quirks de WriteFile sobre el HID stack
-// de Windows que causan 0x57 en este dispositivo.
+// En rawusb mode, device.write() queda DESHABILITADA (devuelve
+// "Selected IO Protocol isn't HID, function is not available!"). Hay que
+// usar device.bulk_transfer() con el endpoint explicito.
+//
+// El KX-500 expone el RGB en endpoint 0x03 OUT (interrupt, 64B max).
+// En libusb, bulk_transfer funciona para cualquier tipo de endpoint
+// (bulk o interrupt) — la libreria se encarga del transfer type interno.
+//
+// bulk_transfer(endpoint, data, length) — los 3 argumentos basicos.
+// Documentado en:
+//   https://docs.signalrgb.com/developer/plugins/advanced-communication/
+const KX500_OUT_ENDPOINT = 0x03;  // Interrupt OUT, 64B max
 
 function writeWrapped(packet) {
     try {
-        device.write(heartbeatStart(), REPORT_SIZE);
-        device.write(packet, REPORT_SIZE);
-        device.write(heartbeatEnd(), REPORT_SIZE);
+        device.bulk_transfer(KX500_OUT_ENDPOINT, heartbeatStart(), REPORT_SIZE);
+        device.bulk_transfer(KX500_OUT_ENDPOINT, packet, REPORT_SIZE);
+        device.bulk_transfer(KX500_OUT_ENDPOINT, heartbeatEnd(), REPORT_SIZE);
     } catch (err) {
-        try { device.log(`[KX500] write error: ${err.message}`); } catch (_) {}
+        try { device.log(`[KX500] bulk_transfer error: ${err.message}`); } catch (_) {}
     }
 }
 
 function writeHandshake() {
     try {
-        device.write(heartbeatStart(), REPORT_SIZE);
-        device.write(pad64(HANDSHAKE), REPORT_SIZE);
-        device.write(heartbeatEnd(), REPORT_SIZE);
+        device.bulk_transfer(KX500_OUT_ENDPOINT, heartbeatStart(), REPORT_SIZE);
+        device.bulk_transfer(KX500_OUT_ENDPOINT, pad64(HANDSHAKE), REPORT_SIZE);
+        device.bulk_transfer(KX500_OUT_ENDPOINT, heartbeatEnd(), REPORT_SIZE);
     } catch (err) {
         try { device.log(`[KX500] handshake error: ${err.message}`); } catch (_) {}
     }
