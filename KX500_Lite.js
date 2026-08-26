@@ -93,21 +93,27 @@ function buildPacket(seq, cmd, params = []) {
  * Envía una acción envuelta en heartbeat START/END.
  *
  * NOTA: device.write() de SignalRGB requiere 2 argumentos: (data, length).
- * Si se omite length, da error "Insufficient arguments" y falla silenciosamente.
+ *
+ * Devuelve true si todos los writes fueron exitosos.
  */
 function sendAction(seq, cmd, params = []) {
     try {
         const packet = buildPacket(seq, cmd, params);
         const hbStart = [RGB_REPORT_ID, 0x01, 0x00, 0x01];
         const hbEnd = [RGB_REPORT_ID, 0x02, 0x00, 0x02];
+        device.log(`[KX500] write HB_START (${hbStart.length}B)`);
         device.write(hbStart, hbStart.length);
-        device.pause(1);
+        device.pause(10);
+        device.log(`[KX500] write CMD (${packet.length}B): ${Array.from(packet.slice(0, 8)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}...`);
         device.write(packet, packet.length);
-        device.pause(1);
+        device.pause(10);
+        device.log(`[KX500] write HB_END (${hbEnd.length}B)`);
         device.write(hbEnd, hbEnd.length);
-        device.pause(1);
+        device.pause(10);
+        return true;
     } catch (err) {
         device.log(`[KX500] sendAction error: ${err.message}`);
+        return false;
     }
 }
 
