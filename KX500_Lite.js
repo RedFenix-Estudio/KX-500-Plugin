@@ -1,18 +1,19 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Plugin — Lite v0.7.1                          ║
+ * ║  KX-500 SignalRGB Plugin — Lite v0.7.2                          ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v0.7.1 (2026-08-26) — USAR device.write() NO send_report     ║
+ * ║  v0.7.2 — FORMATO CORRECTO del KX-500 (64 bytes, no 520)       ║
  * ║                                                                  ║
- * ║  Bug encontrado: KX-500 HID endpoint NO soporta Feature Reports. ║
- * ║  Error: HidD_SetFeature: ERROR_INVALID_FUNCTION                 ║
+ * ║  LECCIONES APRENDIDAS:                                           ║
+ * ║  1. KX-500 NO soporta Feature Reports (HidD_SetFeature falla)   ║
+ * ║  2. KX-500 SOLO acepta Output Reports (HID WriteFile)           ║
+ * ║  3. Endpoint tiene wMaxPacketSize = 64 bytes                    ║
+ * ║  4. Driver oficial manda paquetes de 64 bytes, no 520            ║
+ * ║  5. Plugin Sinowealth (520B) NO aplica al KX-500                ║
  * ║                                                                  ║
- * ║  Por eso send_report (Feature Report) falla.                     ║
- * ║  Hay que usar write() que es HID Output Report via WriteFile.    ║
- * ║                                                                  ║
- * ║  También reduje a UN SOLO write por frame (antes 7 writes,      ║
- * ║  el driver HID no aguantaba el thrash).                         ║
+ * ║  Formato correcto (USBPcap-verified):                            ║
+ * ║    [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 hasta 64] ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
@@ -26,41 +27,46 @@ const DOCUMENTATION_URL = "https://github.com/RedFenix-Estudio/KX-500-Plugin";
 const DEVICE_NAME = "Checkpoint KX-500 (NA-KB-1001)";
 
 // ════════════════════════════════════════════════════════════════════
-// HID — VID/PID + protocolo Sinowealth-style (Output Report)
+// HID — VID/PID + protocolo KX-500 real (64 bytes)
 // ════════════════════════════════════════════════════════════════════
 const KX500_VID = 0x320F;
 const KX500_PID = 0x5008;
-const HID_REPORT_ID = 0x04;       // HID Report ID del KX-500 (USBPcap-verified)
-const PACKET_SIZE = 520;           // Tamaño fijo del paquete
+const HID_REPORT_ID = 0x04;       // HID Report ID del KX-500
+const PACKET_SIZE = 64;            // wMaxPacketSize del endpoint (CRITICO!)
 
-// Header Sinowealth — primer byte es el HID Report ID
-// KX-500 usa 0x04 en lugar de 0x06 (Sinowealth original)
-const SINOWEALTH_HEADER = [
-    0x04,                    // HID Report ID (KX-500)
-    0x08, 0x00, 0x00, 0x01, 0x00, 0x7A, 0x01   // Protocolo header
-];
+// Format EXACTO del KX-500 (USBPcap-verified):
+// [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 a 64]
+// SEQ arranca en 0x08, se incrementa monotónicamente
+const CMD_SOLID_COLOR = 0x03;
+const SOLID_COLOR_HEADER = [0x06, 0x03, 0x05, 0x00, 0x00];  // 5 bytes magic
+
+// SEQ counter local
+let _seqCounter = 0x08;
+
+function nextSeq() {
+    const s = _seqCounter & 0xFF;
+    _seqCounter = (_seqCounter + 1) & 0xFF;
+    return s;
+}
+
+function resetSeq() {
+    _seqCounter = 0x08;
+}
 
 // ════════════════════════════════════════════════════════════════════
 // LAYOUT — 104 keys full-size US ANSI
 // ════════════════════════════════════════════════════════════════════
 const vLedNames = [
-    // Fila 0: F-row (16 keys)
     "Esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
     "Print Screen", "Scroll Lock", "Pause Break",
-    // Fila 1: Number row + nav (17 keys)
     "`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "Backspace",
     "Insert", "Home", "Page Up",
-    // Fila 2: QWERTY + nav (17 keys)
     "Tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\",
     "Del", "End", "Page Down",
-    // Fila 3: Home row (14 keys)
     "Caps Lock", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "Enter",
-    // Fila 4: Z row (14 keys)
     "Left Shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "Right Shift", "Up Arrow",
-    // Fila 5: Space row (11 keys)
     "Left Ctrl", "Left Win", "Left Alt", "Space", "Right Alt", "Fn", "Menu", "Right Ctrl",
     "Left Arrow", "Down Arrow", "Right Arrow",
-    // Numpad (17 keys)
     "NumLock", "Num /", "Num *", "Num -",
     "Num 7", "Num 8", "Num 9", "Num +",
     "Num 4", "Num 5", "Num 6",
@@ -101,7 +107,7 @@ const LAYOUT_SIZE = (function () {
 })();
 
 // ════════════════════════════════════════════════════════════════════
-// SEND COLORS — UN solo write() por frame
+// SEND COLOR — formato KX-500 USBPcap-verified, 64 bytes
 // ════════════════════════════════════════════════════════════════════
 function hexToRgb(hex) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
@@ -113,42 +119,70 @@ function hexToRgb(hex) {
     ];
 }
 
-function sendColors(overrideColor) {
-    if (!vLeds || !vLeds.length) return;
-
-    // Construir RGBData packed (3 bytes por LED)
-    const RGBData = new Array(vLeds.length * 3).fill(0);
-
-    for (let iIdx = 0; iIdx < vLeds.length; iIdx++) {
-        const pos = vLedPositions[iIdx];
+function getAverageColor() {
+    let sumR = 0, sumG = 0, sumB = 0, nonZero = 0;
+    for (let i = 0; i < vLedNames.length; i++) {
+        const pos = vLedPositions[i];
         let color;
-        if (overrideColor) {
-            color = hexToRgb(overrideColor);
-        } else if (LightingMode === "Forced") {
-            color = hexToRgb(forcedColor || "#009bde");
-        } else {
-            // Canvas mode
-            try {
-                color = device.color(pos[0], pos[1]);
-            } catch (err) {
-                color = [0, 0, 0];
-            }
+        try {
+            color = device.color(pos[0], pos[1]);
+        } catch (err) {
+            continue;
         }
-        const idx = vLeds[iIdx] * 3;
-        RGBData[idx] = color[0];
-        RGBData[idx + 1] = color[1];
-        RGBData[idx + 2] = color[2];
+        sumR += color[0];
+        sumG += color[1];
+        sumB += color[2];
+        if (color[0] > 0 || color[1] > 0 || color[2] > 0) nonZero++;
+    }
+    return {
+        r: Math.round(sumR / vLedNames.length),
+        g: Math.round(sumG / vLedNames.length),
+        b: Math.round(sumB / vLedNames.length),
+        nonZero,
+    };
+}
+
+function buildSolidColorPacket(seq, r, g, b) {
+    // Formato KX-500 (USBPcap-verified):
+    //   [04] [SEQ] [03] [06 03 05 00 00] [R G B] [pad 0x00 hasta 64]
+    const packet = [
+        HID_REPORT_ID,
+        seq & 0xFF,
+        CMD_SOLID_COLOR,
+        ...SOLID_COLOR_HEADER,
+        r & 0xFF, g & 0xFF, b & 0xFF,
+    ];
+    while (packet.length < PACKET_SIZE) packet.push(0x00);
+    return packet.slice(0, PACKET_SIZE);
+}
+
+function sendColors(overrideColor) {
+    if (!vLedNames.length) return;
+
+    let r, g, b;
+    if (overrideColor) {
+        const c = hexToRgb(overrideColor);
+        r = c[0]; g = c[1]; b = c[2];
+    } else if (typeof LightingMode !== "undefined" && LightingMode === "Forced") {
+        const c = hexToRgb(forcedColor || "#009bde");
+        r = c[0]; g = c[1]; b = c[2];
+    } else {
+        const avg = getAverageColor();
+        // Si canvas vacío, usar forcedColor como fallback
+        if (avg.nonZero === 0 && typeof forcedColor !== "undefined") {
+            const c = hexToRgb(forcedColor || "#009bde");
+            r = c[0]; g = c[1]; b = c[2];
+        } else {
+            r = avg.r; g = avg.g; b = avg.b;
+        }
     }
 
-    // Construir packet: header + RGBData + padding
-    const packet = SINOWEALTH_HEADER.concat(RGBData);
-    while (packet.length < PACKET_SIZE) packet.push(0x00);
-    const finalPacket = packet.slice(0, PACKET_SIZE);
+    const packet = buildSolidColorPacket(nextSeq(), r, g, b);
 
-    // UN SOLO write por frame (NO send_report porque KX-500 no soporta Feature Reports)
+    // UN SOLO write por frame (Output Report, 64 bytes)
     try {
-        device.write(finalPacket, PACKET_SIZE);
-        device.pause(1);
+        device.write(packet, PACKET_SIZE);
+        device.pause(5);
     } catch (err) {
         // Silenciar
     }
@@ -225,7 +259,9 @@ export function Initialize() {
         device.setSize(LAYOUT_SIZE);
         device.setControllableLeds(vLedNames.slice(), vLedPositions.map(p => p.slice()));
         device.log(`[KX500] Registered: ${DEVICE_NAME} (${vLedNames.length} keys, ${LAYOUT_SIZE[0]}×${LAYOUT_SIZE[1]})`);
-        device.log(`[KX500] Protocol: HID Output Report, 520B, Report ID 0x04`);
+        device.log(`[KX500] Protocol: HID Output Report, 64B, Report ID 0x04`);
+        device.log(`[KX500] Format: [04][SEQ][03][06 03 05 00 00][R G B]`);
+        resetSeq();
     } catch (err) {
         device.notify("KX-500 init error", err.message, 1);
         device.log(`[KX500] init failed: ${err.message}`);
@@ -250,7 +286,7 @@ export {
     KX500_PID,
     HID_REPORT_ID,
     PACKET_SIZE,
-    SINOWEALTH_HEADER,
     sendColors,
     hexToRgb,
+    buildSolidColorPacket,
 };
