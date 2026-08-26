@@ -1,21 +1,27 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v1.4.0                                 ║
+ * ║  KX-500 SignalRGB Add-on v1.5.0                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
  * ║  Protocolo HID confirmado por captura USBPcap+Wireshark           ║
  * ║  (2026-08-26, USBPcap2, device 2.2, endpoint 0x03 OUT)           ║
  * ║                                                                  ║
- * ║  Fix de v1.4.0:                                                   ║
- * ║    Cambio a device.control_transfer() con HID SET_REPORT          ║
- * ║    (Output Report, ID 4). El KX-500 no tiene Feature Reports     ║
- * ║    declarados (HidD_SetFeature -> 0x01 ERROR_INVALID_FUNCTION),   ║
- * ║    y WriteFile falla con 0x57 ERROR_INVALID_PARAMETER para        ║
- * ║    Output Reports. La unica via que queda es el control           ║
- * ║    transfer con SET_REPORT.                                      ║
+ * ║  v1.5.0: Cambio a Type "rawusb" + libusb.                         ║
  * ║                                                                  ║
- * ║  Fix de v1.2.0:                                                   ║
- * ║    Validate() matchea FF1C:0092 en interface 1 (TLC 4).           ║
+ * ║  Iteracion de errores (cada fix intento destrabar algo distinto): ║
+ * ║    v0.7.4: Paquete Sinowealth 520B    -> 0x57 WriteFile (tamano) ║
+ * ║    v1.0.0: Protocolo correcto         -> HID handle is invalid    ║
+ * ║    v1.2.0: Validate apuntaba a Mouse  -> 0x57 WriteFile (RID)    ║
+ * ║    v1.3.0: send_report                -> 0x01 HidD_SetFeature     ║
+ * ║            (no tiene Feature Reports declarados)                  ║
+ * ║    v1.4.0: control_transfer SET_REPORT -> Insufficient arguments ║
+ * ║    v1.5.0: rawusb + libusb             -> deberia funcionar       ║
+ * ║                                                                  ║
+ * ║  El KX-500 tiene un bus interno que WriteFile/HidD_SetFeature     ║
+ * ║  no manejan bien. La doc de SignalRGB recomienda rawusb:         ║
+ * ║  "If you get an 'incorrect function' error, switch to rawusb."   ║
+ * ║  libusb's interrupt_transfer va directo al endpoint 0x03, igual   ║
+ * ║  que el driver oficial de Checkpoint.                            ║
  * ╚══════════════════════════════════════════════════════════════════╝
  *
  * Estructura del paquete (todos los 64B):
@@ -29,14 +35,6 @@
  *   [04 01 00 01 ...pad 64B]  START
  *   [...comando real 64B...]
  *   [04 02 00 02 ...pad 64B]  END
- *
- * Para el KX-500 se envia via HID SET_REPORT control transfer:
- *   bmRequestType = 0x21 (Host->Device, Class, Interface)
- *   bRequest      = 0x09 (SET_REPORT)
- *   wValue        = 0x0204 (Report Type = Output, Report ID = 4)
- *   wIndex        = 1     (Interface 1)
- *   data          = 64 bytes (incluye Report ID 0x04 al inicio)
- *   wLength       = 64
  */
 
 'use strict';
@@ -79,48 +77,30 @@ function heartbeatEnd() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// HID SET_REPORT via control transfer
+// RAWUSB + libusb
 // ════════════════════════════════════════════════════════════════════
-// El KX-500 expone Output Reports pero NO Feature Reports, por lo que:
-//   - device.write() (WriteFile) -> 0x57 ERROR_INVALID_PARAMETER
-//   - device.send_report() (HidD_SetFeature) -> 0x01 ERROR_INVALID_FUNCTION
-// La unica via funcional desde el SDK de SignalRGB es el control transfer
-// con HID class request SET_REPORT, que es lo que HidD_SetOutputReport
-// hace internamente. Llega por el endpoint 0x00 (control) en vez del 0x03
-// (interrupt), pero el firmware lo procesa igual.
-const HID_SET_REPORT = 0x09;
-const HID_RT_OUTPUT = 0x02;
-const HID_RTM_OUTPUT_ID4 = (HID_RT_OUTPUT << 8) | REPORT_ID; // 0x0204
-const HID_BM_HOST_TO_DEV_CLASS_IFACE = 0x21;
-const HID_INTERFACE_NUMBER = 1;
-
-function hidSetReport(packet) {
-    // bmRequestType, bRequest, wValue, wIndex, data, wLength
-    return device.control_transfer(
-        HID_BM_HOST_TO_DEV_CLASS_IFACE,  // 0x21
-        HID_SET_REPORT,                   // 0x09
-        HID_RTM_OUTPUT_ID4,               // 0x0204
-        HID_INTERFACE_NUMBER,             // 1
-        packet,
-        REPORT_SIZE                       // 64
-    );
-}
+// En rawusb mode, device.write() mapea a libusb_interrupt_transfer
+// (o bulk_transfer), que va directo al endpoint del dispositivo.
+// Para el KX-500 esto significa escribir al endpoint 0x03 OUT (interrupt,
+// 64B), que es el mismo que el driver oficial usa via HidD_SetOutputReport
+// internamente. Esto bypassa los quirks de WriteFile sobre el HID stack
+// de Windows que causan 0x57 en este dispositivo.
 
 function writeWrapped(packet) {
     try {
-        hidSetReport(heartbeatStart());
-        hidSetReport(packet);
-        hidSetReport(heartbeatEnd());
+        device.write(heartbeatStart(), REPORT_SIZE);
+        device.write(packet, REPORT_SIZE);
+        device.write(heartbeatEnd(), REPORT_SIZE);
     } catch (err) {
-        try { device.log(`[KX500] control_transfer error: ${err.message}`); } catch (_) {}
+        try { device.log(`[KX500] write error: ${err.message}`); } catch (_) {}
     }
 }
 
 function writeHandshake() {
     try {
-        hidSetReport(heartbeatStart());
-        hidSetReport(pad64(HANDSHAKE));
-        hidSetReport(heartbeatEnd());
+        device.write(heartbeatStart(), REPORT_SIZE);
+        device.write(pad64(HANDSHAKE), REPORT_SIZE);
+        device.write(heartbeatEnd(), REPORT_SIZE);
     } catch (err) {
         try { device.log(`[KX500] handshake error: ${err.message}`); } catch (_) {}
     }
@@ -243,7 +223,7 @@ export function Name() { return 'Checkpoint KX-500 (NA-KB-1001)'; }
 export function Publisher() { return 'RedFenix Estudio'; }
 export function VendorId() { return VID; }
 export function ProductId() { return [PID]; }
-export function Type() { return 'hid'; }
+export function Type() { return 'rawusb'; }
 export function DeviceType() { return 'keyboard'; }
 export function Size() { return SIZE; }
 export function LedNames() { return LED_NAMES.slice(); }

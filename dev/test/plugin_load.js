@@ -30,7 +30,7 @@ console.log('Exports:', Object.keys(m).length);
 console.log('Name():', m.Name());
 console.log('VendorId():', '0x' + m.VendorId().toString(16));
 console.log('ProductId():', m.ProductId().map(p => '0x' + p.toString(16)));
-console.log('Type():', m.Type());
+console.log('Type():', m.Type(), '<-- debe ser "rawusb"');
 console.log('Size():', m.Size());
 console.log('LedNames().length:', m.LedNames().length);
 console.log('LedPositions().length:', m.LedPositions().length);
