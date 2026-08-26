@@ -117,6 +117,24 @@ function sendAction(seq, cmd, params = []) {
     }
 }
 
+/**
+ * Versión simplificada sin heartbeat: manda solo el comando directo.
+ * Útil para diagnóstico — si esto funciona pero sendAction no, el problema
+ * es el heartbeat wrapper. Si ninguno funciona, el problema es el comando.
+ */
+function sendDirect(seq, cmd, params = []) {
+    try {
+        const packet = buildPacket(seq, cmd, params);
+        device.log(`[KX500] write DIRECT (${packet.length}B): ${Array.from(packet.slice(0, 12)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}`);
+        device.write(packet, packet.length);
+        device.pause(10);
+        return true;
+    } catch (err) {
+        device.log(`[KX500] sendDirect error: ${err.message}`);
+        return false;
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // ACCIONES DE ALTO NIVEL (mapeo a bytes del firmware)
 // ════════════════════════════════════════════════════════════════════
@@ -474,6 +492,11 @@ export function Initialize() {
         device.log(`[KX500] Initial OFF FAILED — chequea que Validate() matchee el endpoint RGB (FF1C:0092)`);
     }
 
+    // DEBUG v0.4.0: mandar un color de prueba (azul brillante) al iniciar
+    // para confirmar que el firmware responde a solid color.
+    device.log(`[KX500] DEBUG: enviando color test (azul)`);
+    sendAction(nextSeq(), 0x03, [0x06, 0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0xFF]);
+
     device.log(`[KX500] Author: ${AUTHOR}`);
     device.log(`[KX500] Protocol: HID Output Report, 64B, Report ID 0x04`);
     device.log(`[KX500] Comandos confirmados: OFF, Brightness(0-4), Speed(1-4), Effect(1-19), SolidColor(RGB)`);
@@ -520,6 +543,9 @@ export function Render() {
     avgR = Math.round(avgR / ledBuffer.length);
     avgG = Math.round(avgG / ledBuffer.length);
     avgB = Math.round(avgB / ledBuffer.length);
+
+    // DEBUG v0.4.0: loguear color que se está mandando para diagnóstico
+    device.log(`[KX500] Render: avgR=${avgR} avgG=${avgG} avgB=${avgB}`);
 
     // Enviar solid color con el promedio
     try {
