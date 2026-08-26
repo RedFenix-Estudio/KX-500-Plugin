@@ -499,14 +499,22 @@ export function Initialize() {
         device.log(`[KX500] Handshake failed: ${err.message}`);
     }
 
-    // Apagar LEDs al iniciar
-    if (sendAction(nextSeq(), 0x00, [0x06, 0x01, 0x01])) {
-        device.log(`[KX500] Initial OFF sent OK`);
+    // v0.5.1 FIX CRITICO: setear brightness al MAXIMO al iniciar.
+    //
+    // Antes mandaba Initial OFF (`04 08 00 06 01 01` = brightness 0)
+    // que dejaba el firmware en brightness 0 = TODO APAGADO.
+    // Por eso SignalRGB renderizaba colores correctos pero el teclado
+    // no los mostraba — el firmware ignoraba porque brightness=0.
+    //
+    // Ahora mandamos brightness level 4 (max):
+    //   `04 0C 00 06 01 01 00 00 04`
+    if (sendAction(0x0C, 0x00, [0x06, 0x01, 0x01, 0x00, 0x00, 0x04])) {
+        device.log(`[KX500] Initial brightness MAX sent OK`);
     } else {
-        device.log(`[KX500] Initial OFF FAILED — chequea que Validate() matchee el endpoint RGB (FF1C:0092)`);
+        device.log(`[KX500] Initial brightness FAILED`);
     }
 
-    // DEBUG v0.4.0: mandar un color de prueba (azul brillante) al iniciar
+    // DEBUG: mandar un color de prueba (azul brillante) al iniciar
     // para confirmar que el firmware responde a solid color.
     device.log(`[KX500] DEBUG: enviando color test (azul)`);
     sendAction(nextSeq(), 0x03, [0x06, 0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0xFF]);
@@ -546,6 +554,9 @@ export function Render() {
     renderFrameCounter++;
     if (renderFrameCounter < RENDER_THROTTLE) return;
     renderFrameCounter = 0;
+
+    // Aplicar brightness level (manda comando solo si cambió)
+    applyBrightnessLevel();
 
     // Promedio de color (el KX-500 parece tener zones, no per-key)
     let sumR = 0, sumG = 0, sumB = 0;
@@ -591,6 +602,30 @@ export function Shutdown(SystemSuspending) {
         device.log(`[KX500] Shutdown`);
     } catch (err) {
         device.log(`[KX500] Shutdown error: ${err.message}`);
+    }
+}
+
+// Aplicar brightness level desde el controllable parameter del plugin
+// (SignalRGB manda brightness de 0-100%, lo mapeamos a 0-4 del firmware)
+let lastBrightnessLevel = -1;
+function applyBrightnessLevel() {
+    let level = 0;
+    if (typeof brightness !== "undefined" && brightness !== null) {
+        // Map 0-100 → 0-4 (firmware solo tiene 4 niveles)
+        const b = Math.max(0, Math.min(100, brightness));
+        level = Math.round(b / 25);  // 0-24→0, 25-49→1, 50-74→2, 75-100→4
+        if (level < 0) level = 0;
+        if (level > 4) level = 4;
+    }
+    if (level !== lastBrightnessLevel) {
+        // Solo mandar cuando cambia, no en cada Render
+        if (level === 0) {
+            sendAction(0x08, 0x00, [0x06, 0x01, 0x01]);
+        } else {
+            sendAction(0x08 + level, 0x00, [0x06, 0x01, 0x01, 0x00, 0x00, level]);
+        }
+        lastBrightnessLevel = level;
+        device.log(`[KX500] Brightness level set to ${level}`);
     }
 }
 
