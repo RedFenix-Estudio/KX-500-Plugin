@@ -26,6 +26,18 @@ global.device = {
             len,
         });
     },
+    control_transfer: (bmReqType, bReq, wVal, wIdx, data, wLen, timeout) => {
+        writes.push({
+            method: 'control_transfer',
+            bmReqType: '0x' + bmReqType.toString(16),
+            bReq: '0x' + bReq.toString(16),
+            wVal: '0x' + wVal.toString(16).padStart(4, '0'),
+            wIdx,
+            data: Array.from(data).slice(0, 16),
+            len: wLen,
+            timeout,
+        });
+    },
     notify: () => {},
     color: (x, y) => [128, 64, 32],
 };
@@ -81,7 +93,7 @@ m.Initialize();
 console.log('Writes despues de Initialize:', writes.length, '(esperaba 3: HB_START + HANDSHAKE + HB_END)');
 writes.forEach((w, i) => {
     if (w.method === 'control_transfer') {
-        console.log(`  [${i}] control_transfer(bmReqType=0x${w.bmReqType.toString(16)} bReq=0x${w.bReq.toString(16)} wValue=${w.wVal} wIndex=${w.wIdx}): ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
+        console.log(`  [${i}] control_transfer(reqType=${w.bmReqType} req=${w.bReq} val=${w.wVal} idx=${w.wIdx} len=${w.len} timeout=${w.timeout}): ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
     } else if (w.method === 'bulk_transfer') {
         console.log(`  [${i}] bulk_transfer(endpoint=${w.endpoint} len=${w.len}): ${w.data.map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
     } else {
