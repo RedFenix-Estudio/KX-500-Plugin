@@ -90,13 +90,26 @@ function heartbeatEnd() {
 // bulk_transfer(endpoint, data, length) — los 3 argumentos basicos.
 // Documentado en:
 //   https://docs.signalrgb.com/developer/plugins/advanced-communication/
+//
+// v1.6.1: instrumentado con throttled logging para diagnosticar
 const KX500_OUT_ENDPOINT = 0x03;  // Interrupt OUT, 64B max
+let _lastLogTs = 0;
+let _logCounter = 0;
+
+function throttledLog(msg) {
+    const now = Date.now();
+    if (now - _lastLogTs > 1000) {  // max 1 log per second
+        _lastLogTs = now;
+        try { device.log(`[KX500] ${msg}`); } catch (_) {}
+    }
+}
 
 function writeWrapped(packet) {
     try {
         device.bulk_transfer(KX500_OUT_ENDPOINT, heartbeatStart(), REPORT_SIZE);
         device.bulk_transfer(KX500_OUT_ENDPOINT, packet, REPORT_SIZE);
         device.bulk_transfer(KX500_OUT_ENDPOINT, heartbeatEnd(), REPORT_SIZE);
+        throttledLog(`frame #${++_logCounter} sent: ${packet[1].toString(16).padStart(2, '0')} ${packet[2].toString(16).padStart(2, '0')} ${packet[3].toString(16).padStart(2, '0')}...`);
     } catch (err) {
         try { device.log(`[KX500] bulk_transfer error: ${err.message}`); } catch (_) {}
     }
@@ -303,6 +316,7 @@ export function Render() {
     } else {
         [r, g, b] = getAverageColor();
     }
+    throttledLog(`Render() RGB=(${r},${g},${b}) ep=0x${KX500_OUT_ENDPOINT.toString(16)}`);
     writeWrapped(buildSolidColor(r, g, b, nextSeq()));
 }
 
