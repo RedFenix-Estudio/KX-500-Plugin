@@ -44,10 +44,14 @@ const REPORT_ID = 0x04;
 // ════════════════════════════════════════════════════════════════════
 // HELPERS
 // ════════════════════════════════════════════════════════════════════
+// CRITICO: retornar REGULAR ARRAY, no Uint8Array.
+// La SDK de SignalRGB hace marshaling a .NET que no acepta typed arrays.
+// Si le pasas Uint8Array, device.write() falla con 0x57 ERROR_INVALID_PARAMETER
+// porque el .NET wrapper no sabe cómo convertirlo a byte[].
 function pad64(arr) {
-    const out = new Uint8Array(REPORT_SIZE);
-    for (let i = 0; i < Math.min(arr.length, REPORT_SIZE); i++) out[i] = arr[i];
-    return out;
+    const out = Array.from(arr);  // copia como regular Array
+    while (out.length < REPORT_SIZE) out.push(0x00);
+    return out.slice(0, REPORT_SIZE);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -84,7 +88,8 @@ const KX500_OUT_ENDPOINT = 0x03;  // Interrupt OUT, 64B max (USBPcap confirmed)
 //   teclado_captura_todo.pcapng frame 1669
 //   teclado_perfiles_guardados.pcapng frame 172
 // 64 bytes exactos (43 bytes de data + 21 bytes padding 0x00)
-const HANDSHAKE = new Uint8Array([
+// CRITICO: regular Array, no Uint8Array (mismo motivo que pad64)
+const HANDSHAKE = [
     0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
     0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
     0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
@@ -94,7 +99,7 @@ const HANDSHAKE = new Uint8Array([
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00,
-]);
+];
 
 // ════════════════════════════════════════════════════════════════════
 // COMANDOS — todos confirmados por captura individual
