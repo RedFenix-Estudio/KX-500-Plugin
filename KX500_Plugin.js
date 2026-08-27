@@ -47,18 +47,6 @@ const PID = 0x5008;
 const REPORT_SIZE = 64;
 const REPORT_ID = 0x04;
 
-// Handshake — visto 3x en captura mixta. "0F 32 08 50" little-endian
-// decodifica como VID 0x320F + PID 0x5008. El firmware se autoiden-
-// tifica al recibirlo.
-const HANDSHAKE = [
-    0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
-    0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
-    0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-    0x11, 0x12, 0x14,
-];
-
 // ════════════════════════════════════════════════════════════════════
 // HELPERS
 // ════════════════════════════════════════════════════════════════════
@@ -68,102 +56,51 @@ function pad64(arr) {
     return out;
 }
 
-function heartbeatStart() {
-    return pad64([REPORT_ID, 0x01, 0x00, 0x01]);
-}
-
-function heartbeatEnd() {
-    return pad64([REPORT_ID, 0x02, 0x00, 0x02]);
-}
-
 // ════════════════════════════════════════════════════════════════════
-// RAWUSB + HID SET_REPORT control transfers
+// RAWUSB + bulk_transfer(endpoint=0x03, packet, 64)
 // ════════════════════════════════════════════════════════════════════
-// v1.7.0 — insight del decompilador:
-//   El driver oficial de Checkpoint (CHECKPOINT_KX_500.exe) usa:
-//     1. HidD_SetFeature (Feature Report) de 101 bytes para el handshake
-//     2. WriteFile (Output Report) de 64 bytes para los datos RGB
+// v1.8.0 — REAL FIX basado en análisis exhaustivo de las 16 capturas:
 //
-//   Mi plugin debe imitar este flujo. Como device.send_report() falla
-//   con 0x01 ERROR_INVALID_FUNCTION (el SDK no expone HidD_SetFeature
-//   correctamente en rawusb), usamos device.control_transfer() con
-//   la signature correcta de 8 args (la doc dice 7 + el SDK acepta 8):
+// CONFIRMADO por análisis de las capturas USBPcap del directorio
+// "Captura de Wirseshark del teclado":
+//   - NO hay SET_REPORT (bRequest=0x09) en NINGUNA captura
+//   - NO hay control transfers HID (bmRequestType 0x21)
+//   - El KX-500 habla EXCLUSIVAMENTE vía Output Reports en endpoint 0x03
 //
-//     control_transfer(RequestType, Request, Value, Index,
-//                      DataArray, Length, Timeout)
+// El "handshake" no es HID SET_REPORT — es simplemente el primer
+// Output Report que el driver manda. El firmware espera ese primer
+// paquete (04 A2 03 04 2C 00 00 00 55 AA ...) y DESPUÉS acepta los
+// RGB data como Output Reports normales.
 //
-//   Para HID SET_REPORT Feature:
-//     RequestType = 0x21 (Host→Device, Class, Interface)
-//     Request     = 0x09 (SET_REPORT)
-//     Value       = 0x0304 (Report Type = Feature, Report ID = 4)
-//     Index       = 0x01 (Interface 1 — la del RGB)
+// v0.6.1 (commit del usuario) confirmó que el HEARTBEAT WRAPPER causa
+// ERROR_OPERATION_ABORTED. Por eso este plugin NO usa heartbeat.
 //
-// Para HID SET_REPORT Output (RGB data):
-//     RequestType = 0x21
-//     Request     = 0x09
-//     Value       = 0x0204 (Report Type = Output, Report ID = 4)
-//     Index       = 0x01
+// v1.7.0 usaba control_transfer para hacer SET_REPORT — INCORRECTO.
+// El device rechaza el control transfer (LIBUSB_ERROR_IO) porque el
+// KX-500 no acepta HID SET_REPORT, solo Output Reports en bulk.
 //
-// v1.6.0 usaba bulk_transfer — eso va DIRECTO al endpoint sin pasar
-// por el HID stack, saltándose cualquier Feature Report previo. Por
-// eso el firmware no aceptaba los datos: esperaba el handshake primero.
+// v1.6.0 (rawusb + bulk_transfer) era el approach correcto en transporte,
+// pero le faltaba eliminar el heartbeat wrapper y verificar que el
+// handshake sea solo un Output Report más.
 // ════════════════════════════════════════════════════════════════════
 
-const HID_BM_HOST_TO_DEV_CLASS_IFACE = 0x21;
-const HID_SET_REPORT = 0x09;
-const HID_RT_OUTPUT = 0x02;
-const HID_RT_FEATURE = 0x03;
-const HID_REPORT_ID = 0x04;
-const HID_INTERFACE = 0x01;
-const HANDSHAKE_SIZE = 101; // confirmado por ghidra: driver pasa 0x65 a RequestSetFeature
+const KX500_OUT_ENDPOINT = 0x03;  // Interrupt OUT, 64B max (USBPcap confirmed)
 
-// Handshake REAL de 101 bytes (con padding 0x00 al final)
-// Los primeros 43 bytes son lo que vimos en USBPcap; el resto es
-// probablemente info del dispositivo que el driver construye dinamicamente.
-// Probamos enviar lo que sabemos + ceros.
-const HANDSHAKE_DATA = [
+// "Handshake" = primer Output Report. Visto en:
+//   teclado_captura_todo.pcapng frame 1669
+//   teclado_perfiles_guardados.pcapng frame 172
+// 64 bytes exactos (43 bytes de data + 21 bytes padding 0x00)
+const HANDSHAKE = new Uint8Array([
     0x04, 0xA2, 0x03, 0x04, 0x2C, 0x00, 0x00, 0x00,
     0x55, 0xAA, 0xFF, 0x02, 0x0F, 0x32, 0x08, 0x50,
     0x01, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00,
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
     0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
     0x11, 0x12, 0x14,
-    // Pad a 101 bytes (43 + 58 = 101)
-    ...Array(HANDSHAKE_SIZE - 43).fill(0x00)
-];
-
-function hidSetReport(reportType, data, length) {
-    // control_transfer(RequestType, Request, Value, Index, Data, Length, Timeout)
-    const value = ((reportType & 0xFF) << 8) | (HID_REPORT_ID & 0xFF);
-    return device.control_transfer(
-        HID_BM_HOST_TO_DEV_CLASS_IFACE,  // 0x21
-        HID_SET_REPORT,                   // 0x09
-        value,                             // 0x0204 (Output) o 0x0304 (Feature)
-        HID_INTERFACE,                     // 0x01
-        data,
-        length,                            // data length
-        1000                               // 1 second timeout
-    );
-}
-
-function writeHandshake() {
-    try {
-        const result = hidSetReport(HID_RT_FEATURE, HANDSHAKE_DATA, HANDSHAKE_SIZE);
-        try { device.log(`[KX500] Handshake sent (Feature Report ${HANDSHAKE_SIZE}B), result: ${result ? 'OK' : 'no resp'}`); } catch (_) {}
-    } catch (err) {
-        try { device.log(`[KX500] handshake error: ${err.message}`); } catch (_) {}
-    }
-}
-
-function writeRGBPacket(packet) {
-    try {
-        const result = hidSetReport(HID_RT_OUTPUT, packet, REPORT_SIZE);
-        return result;
-    } catch (err) {
-        try { device.log(`[KX500] rgb send error: ${err.message}`); } catch (_) {}
-        return null;
-    }
-}
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+]);
 
 let _lastLogTs = 0;
 function throttledLog(msg) {
@@ -174,11 +111,25 @@ function throttledLog(msg) {
     }
 }
 
-let _renderCounter = 0;
+let _frameCount = 0;
+
+function writeOutput(packet) {
+    _frameCount++;
+    try {
+        device.bulk_transfer(KX500_OUT_ENDPOINT, packet, REPORT_SIZE);
+        throttledLog(`frame #${_frameCount} sent: ${Array.from(packet.slice(0, 11)).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
+    } catch (err) {
+        try { device.log(`[KX500] bulk_transfer error: ${err.message}`); } catch (_) {}
+    }
+}
+
+function writeHandshake() {
+    writeOutput(HANDSHAKE);
+    try { device.log('[KX500] Handshake (1st Output Report) sent'); } catch (_) {}
+}
+
 function writeWrapped(packet) {
-    _renderCounter++;
-    throttledLog(`Render #${_renderCounter}: ${packet[1].toString(16)} ${packet[2].toString(16)} ${packet[3].toString(16)}...`);
-    writeRGBPacket(packet);
+    writeOutput(packet);
 }
 
 // ════════════════════════════════════════════════════════════════════
