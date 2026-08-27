@@ -1,40 +1,34 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v1.5.0                                 ║
+ * ║  KX-500 SignalRGB Add-on v2.0.0                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  Protocolo HID confirmado por captura USBPcap+Wireshark           ║
- * ║  (2026-08-26, USBPcap2, device 2.2, endpoint 0x03 OUT)           ║
+ * ║  v2.0.0 — REVERT a v0.5.x + v0.6.1 (que SÍ tomaba control)      ║
  * ║                                                                  ║
- * ║  v1.5.0: Cambio a Type "rawusb" + libusb.                         ║
+ * ║  HISTORIA del journey:                                           ║
+ * ║    v0.5.1: device.write(64B) + device.pause(5/10) -> CONTROLABA   ║
+ * ║           (firmware apagaba con brightness 0)                     ║
+ * ║    v0.5.2: pad HANDSHAKE a 64 bytes (HID handle disconnects)     ║
+ * ║    v0.6.1: QUITAR heartbeat (causaba ERROR_OPERATION_ABORTED)    ║
+ * ║    v1.0.0: rewrite mio - HID pero sin device.pause -> 0x57     ║
+ * ║    v1.2.0-1.7.0: intentos de control_transfer / rawusb -> NADA    ║
  * ║                                                                  ║
- * ║  Iteracion de errores (cada fix intento destrabar algo distinto): ║
- * ║    v0.7.4: Paquete Sinowealth 520B    -> 0x57 WriteFile (tamano) ║
- * ║    v1.0.0: Protocolo correcto         -> HID handle is invalid    ║
- * ║    v1.2.0: Validate apuntaba a Mouse  -> 0x57 WriteFile (RID)    ║
- * ║    v1.3.0: send_report                -> 0x01 HidD_SetFeature     ║
- * ║            (no tiene Feature Reports declarados)                  ║
- * ║    v1.4.0: control_transfer SET_REPORT -> Insufficient arguments ║
- * ║    v1.5.0: rawusb + libusb             -> deberia funcionar       ║
+ * ║  LECCION: las versiones v0.5.1 + v0.5.2 + v0.6.1 SÍ funcionaban ║
+ * ║  parcialmente. El bug de v1.0.0+ fue haber QUITADO los          ║
+ * ║  device.pause() que el firmware necesita.                          ║
  * ║                                                                  ║
- * ║  El KX-500 tiene un bus interno que WriteFile/HidD_SetFeature     ║
- * ║  no manejan bien. La doc de SignalRGB recomienda rawusb:         ║
- * ║  "If you get an 'incorrect function' error, switch to rawusb."   ║
- * ║  libusb's interrupt_transfer va directo al endpoint 0x03, igual   ║
- * ║  que el driver oficial de Checkpoint.                            ║
+ * ║  Protocolo (confirmado por 16 capturas USBPcap + decompilacion): ║
+ * ║    - Type: "hid" (no rawusb)                                    ║
+ * ║    - device.write(64B) a Output Report (Report ID 0x04)         ║
+ * ║    - device.pause(5-10ms) entre writes (firmware necesita tiempo) ║
+ * ║    - 1er write = "handshake" (04 A2 03 04 2C 00 00 00 55 AA...) ║
+ * ║    - writes subsiguientes = RGB data (04 [SEQ] cmd...)           ║
+ * ║    - Sin heartbeat wrapper (v0.6.1 fix)                          ║
+ * ║                                                                  ║
+ * ║  Estructura del paquete (todos los 64B):                         ║
+ * ║    [04] [SEQ] [CMD/DATA...] [pad 0x00]                           ║
+ * ║                                                                  ║
  * ╚══════════════════════════════════════════════════════════════════╝
- *
- * Estructura del paquete (todos los 64B):
- *   [04] [SEQ] [CMD/DATA...] [pad 0x00]
- *    │     │      │
- *    │     │      └─ payload específico del comando
- *    │     └─ sequence byte (específico por comando, no counter)
- *    └─ Report ID HID = 0x04 (fijo)
- *
- * Envoltorio obligatorio en cada acción:
- *   [04 01 00 01 ...pad 64B]  START
- *   [...comando real 64B...]
- *   [04 02 00 02 ...pad 64B]  END
  */
 
 'use strict';
@@ -102,36 +96,6 @@ const HANDSHAKE = new Uint8Array([
     0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
-let _lastLogTs = 0;
-function throttledLog(msg) {
-    const now = Date.now();
-    if (now - _lastLogTs > 1000) {
-        _lastLogTs = now;
-        try { device.log(`[KX500] ${msg}`); } catch (_) {}
-    }
-}
-
-let _frameCount = 0;
-
-function writeOutput(packet) {
-    _frameCount++;
-    try {
-        device.bulk_transfer(KX500_OUT_ENDPOINT, packet, REPORT_SIZE);
-        throttledLog(`frame #${_frameCount} sent: ${Array.from(packet.slice(0, 11)).map(b => b.toString(16).padStart(2, '0')).join(' ')}...`);
-    } catch (err) {
-        try { device.log(`[KX500] bulk_transfer error: ${err.message}`); } catch (_) {}
-    }
-}
-
-function writeHandshake() {
-    writeOutput(HANDSHAKE);
-    try { device.log('[KX500] Handshake (1st Output Report) sent'); } catch (_) {}
-}
-
-function writeWrapped(packet) {
-    writeOutput(packet);
-}
-
 // ════════════════════════════════════════════════════════════════════
 // COMANDOS — todos confirmados por captura individual
 // ════════════════════════════════════════════════════════════════════
@@ -167,6 +131,34 @@ function buildEffect(n) {
 // SEQ counter local para buildSolidColor.
 let _seq = 0x08;
 function nextSeq() { const s = _seq; _seq = (_seq + 1) & 0xFF; return s; }
+
+// ════════════════════════════════════════════════════════════════════
+// WRITES con device.pause() — CLAVE para que el firmware responda
+// ════════════════════════════════════════════════════════════════════
+// v0.5.1+v0.5.2+v0.6.1 usaba device.pause(5-10ms) entre writes.
+// Sin esto, el firmware del KX-500 se desconecta / ignora comandos.
+// v1.0.0 mio quito los pauses -> HID handle 0x57
+// v1.5.0+ con rawusb NO se enviaba nada (libusb OK pero firmware no respondia)
+
+function writeOutput(packet) {
+    try {
+        device.write(packet, REPORT_SIZE);
+    } catch (err) {
+        try { device.log(`[KX500] write error: ${err.message}`); } catch (_) {}
+    }
+}
+
+function writeHandshake() {
+    try { device.log('[KX500] Sending handshake...'); } catch (_) {}
+    writeOutput(HANDSHAKE);
+    try { device.pause(10); } catch (_) {}
+    try { device.log('[KX500] Handshake sent'); } catch (_) {}
+}
+
+function writeRGBPacket(packet) {
+    writeOutput(packet);
+    try { device.pause(5); } catch (_) {}
+}
 
 // ════════════════════════════════════════════════════════════════════
 // LAYOUT — 104 keys full-size US ANSI
@@ -249,7 +241,7 @@ export function Name() { return 'Checkpoint KX-500 (NA-KB-1001)'; }
 export function Publisher() { return 'RedFenix Estudio'; }
 export function VendorId() { return VID; }
 export function ProductId() { return [PID]; }
-export function Type() { return 'rawusb'; }
+export function Type() { return 'hid'; }  // <- REVERTIDO a "hid" (no rawusb)
 export function DeviceType() { return 'keyboard'; }
 export function Size() { return SIZE; }
 export function LedNames() { return LED_NAMES.slice(); }
@@ -262,23 +254,10 @@ export function ImageUrl() {
 /**
  * Validate — confirmado con log real de SignalRGB.
  *
- * El RGB del KX-500 está en la TLC Vendor Defined (FF1C:0092) que
- * el fabricante registra DENTRO de la interface 1 (la segunda USB
- * interface, que declara bInterfaceProtocol = 0x02 "Mouse" solo
- * para evitar problemas con Windows, pero las TLCs HID reales son
- * 4 colecciones: Keyboard NKRO, Consumer, Consumer swap, y FF1C:0092
- * que es donde está el RGB).
- *
- * Estructura completa del KX-500 (5 TLCs visibles para SignalRGB):
- *   interface 0, col 0  -> Keyboard BIOS      (intf USB 0)
- *   interface 1, col 1  -> Keyboard NKRO      (intf USB 1)
- *   interface 1, col 2  -> Consumer Control   (intf USB 1)
- *   interface 1, col 3  -> Consumer swap      (intf USB 1)
- *   interface 1, col 4  -> Vendor Defined     (intf USB 1)  ← RGB
- *
- * Mi v1.0.0 matcheaba FF1C:0092 o collection===4, que era correcto.
- * Mi v1.1.0 se confundió pensando que era Mouse (0x01:0x02) y eso
- * rompía el match, por eso veías "HID handle is invalid" en el log.
+ * El RGB del KX-500 está en la TLC Vendor Defined (FF1C:0092) en
+ * la interface 1, collection 0x0004. La interface está declarada
+ * por el fabricante como "Mouse" (bInterfaceProtocol=0x02) pero
+ * internamente tiene los endpoints 0x82 IN y 0x03 OUT.
  */
 export function Validate(endpoint) {
     if (endpoint.interface === 1
@@ -301,34 +280,70 @@ export function ConflictingProcesses() {
     return ['Mechanical Keyboard.exe', 'HidServ.exe', 'CHECKPOINT_KX_500.exe'];
 }
 
+/**
+ * Initialize — v0.5.1: handshake + brightness MAX + color test
+ *
+ * Secuencia:
+ * 1. handshake (Output Report 64B)        — abre la "conversacion" con firmware
+ * 2. pause(10)
+ * 3. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
+ * 4. pause(10)
+ * 5. color test (azul)                    — opcional, confirma que responde
+ */
 export function Initialize() {
     try {
         device.setName('Checkpoint KX-500 (NA-KB-1001)');
         device.setSize(SIZE);
         device.setControllableLeds(LED_NAMES.slice(), LED_POSITIONS.map((p) => p.slice()));
         device.log(`[KX500] Registered ${LED_NAMES.length} keys (${SIZE[0]}x${SIZE[1]})`);
-        device.log(`[KX500] HID Output Report 64B on interface 1 (Mouse) — Report ID 0x04`);
+        device.log(`[KX500] Protocol: HID Output Report 64B + device.pause() between writes`);
     } catch (err) {
         try { device.log(`[KX500] init error: ${err.message}`); } catch (_) {}
     }
     _seq = 0x08;
+
+    // 1) Handshake
     writeHandshake();
-    try { device.log('[KX500] Handshake sent'); } catch (_) {}
+
+    // 2) Brightness MAX (sin esto el firmware se queda en brightness 0 = apagado)
+    try { device.log('[KX500] Setting brightness MAX (level 4)...'); } catch (_) {}
+    writeRGBPacket(buildBrightness(4));
+
+    // 3) Color test (azul) — confirma que el firmware responde
+    try { device.log('[KX500] Sending test color (blue)...'); } catch (_) {}
+    writeRGBPacket(buildSolidColor(0, 0, 0xFF, nextSeq()));
+
+    try { device.log('[KX500] Init complete'); } catch (_) {}
+}
+
+/**
+ * Render — manda el color actual del framebuffer
+ * v0.5.1/v0.6.1: throttle opcional cada N frames para no saturar USB
+ */
+let _renderCounter = 0;
+let _lastLogTs = 0;
+function throttledLog(msg) {
+    const now = Date.now();
+    if (now - _lastLogTs > 2000) {
+        _lastLogTs = now;
+        try { device.log(`[KX500] ${msg}`); } catch (_) {}
+    }
 }
 
 export function Render() {
+    _renderCounter++;
     let r, g, b;
     if (typeof LightingMode !== 'undefined' && LightingMode === 'Forced') {
         [r, g, b] = hexToRgb(forcedColor || '#009bde');
     } else {
         [r, g, b] = getAverageColor();
     }
-    throttledLog(`Render() RGB=(${r},${g},${b})`);
-    writeWrapped(buildSolidColor(r, g, b, nextSeq()));
+    throttledLog(`Render #${_renderCounter}: RGB=(${r},${g},${b})`);
+    writeRGBPacket(buildSolidColor(r, g, b, nextSeq()));
 }
 
 export function Shutdown(suspending) {
     const hex = suspending ? '#000000' : (shutdownColor || '#000000');
     const [r, g, b] = hexToRgb(hex);
-    writeWrapped((r + g + b < 30) ? buildOff() : buildSolidColor(r, g, b, nextSeq()));
+    writeRGBPacket((r + g + b < 30) ? buildOff() : buildSolidColor(r, g, b, nextSeq()));
 }
