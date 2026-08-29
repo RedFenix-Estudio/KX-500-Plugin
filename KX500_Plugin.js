@@ -1,10 +1,10 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v2.0.2                                 ║
+ * ║  KX-500 SignalRGB Add-on v2.0.3                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v2.0.2 — REVERT v2.0.1 (handshake de 16 paquetes causa           ║
- * ║           ERROR_OPERATION_ABORTED en SignalRGB SDK)              ║
+ * ║  v2.0.3 — FIX: device.pause(100) en Initialize() + quitar         ║
+ * ║           set_endpoint (firma incorrecta)                        ║
  * ║                                                                  ║
  * ║  HISTORIA del journey:                                           ║
  * ║    v0.5.1: device.write(64B) + device.pause(5/10) -> CONTROLABA   ║
@@ -15,24 +15,29 @@
  * ║    v1.2.0-1.7.0: intentos de control_transfer / rawusb -> NADA    ║
  * ║    v2.0.0: REVERT a v0.5.1 + fix byte 2 = 0x01                  ║
  * ║    v2.0.1: agregar handshake de 16 paquetes (CAUSO ERROR_OP_ABORTED)║
- * ║    v2.0.2: revertir a 1 solo handshake (regresar a v0.5.1+v2.0.0)║
+ * ║    v2.0.2: revertir a 1 solo handshake (v0.5.1)                  ║
+ * ║    v2.0.3: device.pause(100) en Initialize + quitar set_endpoint  ║
  * ║                                                                  ║
- * ║  LECCION (RE 2026-08-29):                                        ║
- * ║    - Mi test Python con HidD_SetOutputReport y 16 paquetes        ║
- * ║      FUNCIONA. Pero el plugin SignalRGB usa HID overlapped I/O    ║
- * ║      que es async, y 16 writes rapidos SATURAN el device        ║
- * ║      → ERROR_OPERATION_ABORTED (995) + handle disconnect.        ║
- * ║    - El driver oficial HidServ.dll SÍ envia 16 paquetes, pero     ║
- * ║      desde su propio worker thread con su propio timing.         ║
- * ║    - El plugin SignalRGB DEBE usar solo 1 HANDSHAKE + brightness ║
- * ║      + solid color (lo que hacia v0.5.1) y que SÍ controlaba.    ║
+ * ║  DIAGNOSTICO FINAL (2026-08-29 11:16):                          ║
+ * ║    - El primer write (handshake) SIEMPRE funciona.                ║
+ * ║    - El segundo write (brightness) falla con 0x3E3                ║
+ * ║      ERROR_OPERATION_ABORTED.                                    ║
+ * ║    - Causa: timing. Sin pausa entre writes, el dispositivo se    ║
+ * ║      "desconecta" del bus USB (Windows cancela la operacion).    ║
+ * ║    - Solucion: device.pause(100) entre writes en Initialize().   ║
+ * ║    - En Render() (continuo) se mantiene pause(5) porque el        ║
+ * ║      dispositivo ya esta "en sync" despues del Initialize.       ║
+ * ║    - set_endpoint(0x03) QUITADO: la firma espera QJSValue, no    ║
+ * ║      int. SignalRGB SDK ya configura el endpoint correcto         ║
+ * ║      via el Validate() (FF1C:0092).                             ║
  * ║                                                                  ║
- * ║  Protocolo (confirmado):                                        ║
+ * ║  Protocolo (confirmado por 16 capturas USBPcap + test Python):   ║
  * ║    - Type: "hid" (no rawusb)                                    ║
  * ║    - device.write(64B) a Output Report (Report ID 0x04)         ║
- * ║    - device.pause(5-10ms) entre writes (firmware necesita tiempo) ║
+ * ║    - device.pause(100ms) en Initialize (warmup)                  ║
+ * ║    - device.pause(5ms) en Render (continuo)                       ║
  * ║    - 1 HANDSHAKE + 1 brightness + 1 test color (3 paquetes)     ║
- * ║    - NO heartbeat wrapper (causa ERROR_OPERATION_ABORTED)       ║
+ * ║    - Sin heartbeat wrapper (causa ERROR_OPERATION_ABORTED)       ║
  * ║                                                                  ║
  * ║  Estructura del paquete (todos los 64B):                         ║
  * ║    [04] [SEQ] [CMD/DATA...] [pad 0x00]                           ║
@@ -192,13 +197,13 @@ function writeHandshake() {
     // v2.0.2: SOLO 1 paquete. NO hacer heartbeat (causa ERROR_OPERATION_ABORTED).
     // v0.5.1 con un solo HANDSHAKE SÍ controlaba el teclado.
     writeOutput(HANDSHAKE);
-    try { device.pause(10); } catch (_) {}
+    try { device.pause(100); } catch (_) {}  // v2.0.3: 100ms para warmup
     try { device.log('[KX500] Handshake sent'); } catch (_) {}
 }
 
-function writeRGBPacket(packet) {
+function writeRGBPacket(packet, pauseMs = 5) {
     writeOutput(packet);
-    try { device.pause(5); } catch (_) {}
+    try { device.pause(pauseMs); } catch (_) {}
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -347,29 +352,23 @@ export function Initialize() {
         try { device.log(`[KX500] init error: ${err.message}`); } catch (_) {}
     }
 
-    // CRITICO: seleccionar explícitamente el endpoint OUT 0x03.
-    // Sin esto, SignalRGB podria estar usando el endpoint equivocado.
-    // El Validate() matchea por TLC FF1C:0092, pero hay 5 endpoints
-    // (uno por TLC). set_endpoint() fuerza el correcto.
-    try {
-        device.set_endpoint(0x03);
-        try { device.log('[KX500] Endpoint set to 0x03 OUT'); } catch (_) {}
-    } catch (err) {
-        try { device.log(`[KX500] set_endpoint failed: ${err.message}`); } catch (_) {}
-    }
+    // v2.0.3: set_endpoint(0x03) QUITADO. La firma espera QJSValue, no int.
+    // SignalRGB SDK ya configura el endpoint correcto via el Validate() (FF1C:0092).
+    // La llamada incorrecta causaba "Unable to determine callable overload" y
+    // probablemente contribua a los errores 995.
 
     _seq = 0x08;
 
-    // 1) Handshake
+    // 1) Handshake (con pausa 100ms para warmup del dispositivo)
     writeHandshake();
 
     // 2) Brightness MAX (sin esto el firmware se queda en brightness 0 = apagado)
     try { device.log('[KX500] Setting brightness MAX (level 4)...'); } catch (_) {}
-    writeRGBPacket(buildBrightness(4));
+    writeRGBPacket(buildBrightness(4), 100);  // v2.0.3: 100ms entre writes en init
 
     // 3) Color test (azul) — confirma que el firmware responde
     try { device.log('[KX500] Sending test color (blue)...'); } catch (_) {}
-    writeRGBPacket(buildSolidColor(0, 0, 0xFF, nextSeq()));
+    writeRGBPacket(buildSolidColor(0, 0, 0xFF, nextSeq()), 100);
 
     try { device.log('[KX500] Init complete'); } catch (_) {}
 }

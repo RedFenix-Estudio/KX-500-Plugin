@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.0.3 (2026-08-29) — FIX: pause(100ms) en Initialize + quitar set_endpoint
+
+**Diagnostico final:** el primer write (handshake) SIEMPRE funciona, pero el segundo
+write (brightness) falla con `0x3E3` ERROR_OPERATION_ABORTED. El log de SignalRGB
+tambien mostro: `[KX500] set_endpoint failed: Unable to determine callable overload.`
+
+**Cambios:**
+1. `set_endpoint(0x03)` QUITADO — la firma espera QJSValue (3 o 4 args), no un int.
+   SignalRGB SDK ya configura el endpoint via el Validate() (FF1C:0092).
+2. `device.pause(10)` → `device.pause(100)` en `Initialize()` — el dispositivo
+   necesita tiempo para procesar el primer write antes del segundo.
+3. `writeRGBPacket(packet, pauseMs=5)` ahora acepta pause custom — se pasa 100
+   en Initialize y 5 en Render (continuo).
+
+**Test que lo confirmo:** `test_long_pauses.py` con 5 writes separados por 500ms:
+5/5 OK vs los tests anteriores que se colgaban en el 2do-3er write.
+
+**Estado final del plugin:**
+- 1 HANDSHAKE + 1 brightness + 1 test color (3 paquetes en Initialize)
+- 100ms entre cada uno (warmup)
+- 5ms entre Render() (continuo, dispositivo en sync)
+
+---
+
 ## v2.0.2 (2026-08-29) — REVERTIR handshake de 16 paquetes (CAUSABA ERROR_OPERATION_ABORTED)
 
 **Descubrimiento critico:** el handshake de 16 paquetes (v2.0.1) **CAUSABA**
