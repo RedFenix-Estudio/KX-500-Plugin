@@ -1,11 +1,10 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v2.0.1                                 ║
+ * ║  KX-500 SignalRGB Add-on v2.0.2                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v2.0.1 — RE completo de HidServ.dll + test Python confirma que   ║
- * ║           el firmware SÍ responde a HidD_SetOutputReport con el   ║
- * ║           handshake de 16 paquetes.                              ║
+ * ║  v2.0.2 — REVERT v2.0.1 (handshake de 16 paquetes causa           ║
+ * ║           ERROR_OPERATION_ABORTED en SignalRGB SDK)              ║
  * ║                                                                  ║
  * ║  HISTORIA del journey:                                           ║
  * ║    v0.5.1: device.write(64B) + device.pause(5/10) -> CONTROLABA   ║
@@ -15,24 +14,25 @@
  * ║    v1.0.0: rewrite mio - HID pero sin device.pause -> 0x57     ║
  * ║    v1.2.0-1.7.0: intentos de control_transfer / rawusb -> NADA    ║
  * ║    v2.0.0: REVERT a v0.5.1 + fix byte 2 = 0x01                  ║
- * ║    v2.0.1: agregar handshake de 16 paquetes (descubierto via RE)  ║
+ * ║    v2.0.1: agregar handshake de 16 paquetes (CAUSO ERROR_OP_ABORTED)║
+ * ║    v2.0.2: revertir a 1 solo handshake (regresar a v0.5.1+v2.0.0)║
  * ║                                                                  ║
- * ║  RE profundo (2026-08-29) mostro que:                            ║
- * ║    - El .exe delega toda comunicacion a HidServ.dll              ║
- * ║    - HidServ.dll usa HidD_SetOutputReport (via WriteFile)        ║
- * ║    - El firmware SÍ acepta Output Reports, NO Feature Reports    ║
- * ║    - El driver oficial envia 16 paquetes antes de cualquier      ║
- * ║      comando RGB: handshake + 15 START/END alternados             ║
- * ║    - Test Python (HidD_SetOutputReport) confirmo que el firmware   ║
- * ║      responde y el teclado cambia de color                       ║
+ * ║  LECCION (RE 2026-08-29):                                        ║
+ * ║    - Mi test Python con HidD_SetOutputReport y 16 paquetes        ║
+ * ║      FUNCIONA. Pero el plugin SignalRGB usa HID overlapped I/O    ║
+ * ║      que es async, y 16 writes rapidos SATURAN el device        ║
+ * ║      → ERROR_OPERATION_ABORTED (995) + handle disconnect.        ║
+ * ║    - El driver oficial HidServ.dll SÍ envia 16 paquetes, pero     ║
+ * ║      desde su propio worker thread con su propio timing.         ║
+ * ║    - El plugin SignalRGB DEBE usar solo 1 HANDSHAKE + brightness ║
+ * ║      + solid color (lo que hacia v0.5.1) y que SÍ controlaba.    ║
  * ║                                                                  ║
- * ║  Protocolo (confirmado por 16 capturas USBPcap + decompilacion +  ║
- * ║  test Python con HidD_SetOutputReport):                           ║
+ * ║  Protocolo (confirmado):                                        ║
  * ║    - Type: "hid" (no rawusb)                                    ║
  * ║    - device.write(64B) a Output Report (Report ID 0x04)         ║
  * ║    - device.pause(5-10ms) entre writes (firmware necesita tiempo) ║
- * ║    - Inicializacion: 16 paquetes (1 handshake + 15 START/END)     ║
- * ║    - Sin heartbeat wrapper (v0.6.1 fix)                          ║
+ * ║    - 1 HANDSHAKE + 1 brightness + 1 test color (3 paquetes)     ║
+ * ║    - NO heartbeat wrapper (causa ERROR_OPERATION_ABORTED)       ║
  * ║                                                                  ║
  * ║  Estructura del paquete (todos los 64B):                         ║
  * ║    [04] [SEQ] [CMD/DATA...] [pad 0x00]                           ║
@@ -110,13 +110,17 @@ const HANDSHAKE = [
     0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-// "Heartbeat" = pares START/END que el driver oficial envia antes/despues
-// de cada comando. Visto en USBPcap: 04 01 00 01 (START) y 04 02 00 02 (END).
-// v2.0.1: el handshake COMPLETO es 16 paquetes:
-//   - 1x HANDSHAKE (inicializacion con VID/PID)
-//   - 15x START/END alternados (heartbeat para sync)
+// v2.0.2: NO incluir heartbeat. El driver oficial HidServ.dll lo hace
+// internamente desde su worker thread, pero el plugin SignalRGB con
+// HID overlapped I/O (async) satura el dispositivo y causa
+// ERROR_OPERATION_ABORTED (995) + handle disconnect.
 //
-// Test Python (2026-08-29) confirmo que con 16 paquetes el firmware responde.
+// v0.6.1 (commit del usuario) ya habia confirmado esto:
+// "QUITAR heartbeat (causaba ERROR_OPERATION_ABORTED)"
+//
+// El handshake es SOLO el primer paquete. Los 15 START/END que veíamos
+// en USBPcap los genera HidServ.dll desde su thread, no el firmware
+// ni SignalRGB. Por eso NO debemos replicarlos desde el plugin.
 // Sin el heartbeat, algunos firmwares quedan en estado "no inicializado" y descartan RGB data.
 function buildHeartbeatPair(seq) {
     // seq debe ser par: 0=START, 1=END, 2=START, 3=END, ...
@@ -184,16 +188,12 @@ function writeOutput(packet) {
 }
 
 function writeHandshake() {
-    try { device.log('[KX500] Sending handshake (16 packets)...'); } catch (_) {}
-    // Paquete 0: HANDSHAKE completo (con VID/PID/version)
+    try { device.log('[KX500] Sending handshake (1 packet)...'); } catch (_) {}
+    // v2.0.2: SOLO 1 paquete. NO hacer heartbeat (causa ERROR_OPERATION_ABORTED).
+    // v0.5.1 con un solo HANDSHAKE SÍ controlaba el teclado.
     writeOutput(HANDSHAKE);
     try { device.pause(10); } catch (_) {}
-    // Paquetes 1-15: heartbeat START/END alternados
-    for (let i = 1; i <= 15; i++) {
-        writeOutput(buildHeartbeatPair(i - 1));
-        try { device.pause(5); } catch (_) {}
-    }
-    try { device.log('[KX500] Handshake (16 packets) sent'); } catch (_) {}
+    try { device.log('[KX500] Handshake sent'); } catch (_) {}
 }
 
 function writeRGBPacket(packet) {
@@ -322,20 +322,19 @@ export function ConflictingProcesses() {
 }
 
 /**
- * Initialize — v2.0.1: handshake completo de 16 paquetes + brightness + test
+ * Initialize — v2.0.2: revert a handshake simple (como v0.5.1)
  *
- * Secuencia (replicando exactamente lo que hace el driver oficial HidServ.dll):
+ * Secuencia:
  * 1. set_endpoint(0x03)                   — explícitamente seleccionar el OUT
- * 2. HANDSHAKE (1 paquete con VID/PID)     — Output Report con magic 55 AA FF
- * 3. 15x START/END heartbeat               — pares 04 01 00 01 / 04 02 00 02
- * 4. pause(10)
- * 5. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
- * 6. pause(10)
- * 7. color test (azul)                    — opcional, confirma que responde
+ * 2. handshake (1 Output Report 64B)      — abre la "conversacion" con firmware
+ * 3. pause(10)
+ * 4. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
+ * 5. pause(10)
+ * 6. color test (azul)                    — opcional, confirma que responde
  *
- * RE 2026-08-29: el driver oficial envia 16 paquetes (1 HANDSHAKE + 15 heartbeat)
- * antes de cualquier comando RGB. Sin el heartbeat completo, el firmware
- * queda en estado "no inicializado" y descarta los comandos.
+ * v2.0.2: NO hacer heartbeat de 15 paquetes. Causa ERROR_OPERATION_ABORTED (995)
+ * en SignalRGB SDK que usa HID overlapped I/O. v0.5.1 con 1 solo handshake
+ * SÍ controlaba el teclado.
  */
 export function Initialize() {
     try {

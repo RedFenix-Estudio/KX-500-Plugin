@@ -1,38 +1,44 @@
 # Changelog
 
-## v2.0.1 (2026-08-29) — Handshake completo de 16 paquetes
+## v2.0.2 (2026-08-29) — REVERTIR handshake de 16 paquetes (CAUSABA ERROR_OPERATION_ABORTED)
 
-**Cambio:** `Initialize()` ahora envia 16 paquetes del handshake (1 HANDSHAKE + 15 START/END heartbeat) en vez de solo 1 paquete.
+**Descubrimiento critico:** el handshake de 16 paquetes (v2.0.1) **CAUSABA**
+`ERROR_OPERATION_ABORTED (995)` en SignalRGB SDK, exactamente el mismo error
+que v0.6.1 tuvo con el heartbeat wrapper. Mi test Python con 16 paquetes
+funciono porque NO competia con SignalRgbService, pero el plugin SÍ.
 
-**Por que:** el RE de `HidServ.dll` (en `driver_RE/`) mostro que el driver oficial SIEMPRE envia 16 paquetes antes de cualquier comando RGB. El firmware del KX-500 se queda en estado "no inicializado" si no recibe el heartbeat completo.
+**Cambio:** revertido a 1 solo HANDSHAKE (como v0.5.1).
 
-**Test que lo confirmo:** `dev/tools/test_with_handshake.py` con `HidD_SetOutputReport` — el usuario confirmo que el teclado cambio de color con el handshake de 16 paquetes.
+**Estado actual del bug:**
+- v2.0.0 con byte 2 = 0x01 (1 HANDSHAKE) — el plugin tiene el fix correcto
+- SignalRgbService monopoliza el KX-500 (PID 5540) y rompe el handle
+- Error: `(0x000003E5) ERROR_IO_PENDING` + `(0x000003E3) ERROR_OPERATION_ABORTED`
+  + `Device Hid Handle is no longer connected!`
+- Causa: SignalRgbService tiene el handle abierto en background, y cuando
+  el plugin intenta escribir, Windows cancela la operacion por conflicto
+  de handle
 
-**Nuevas funciones:**
-- `buildHeartbeatPair(seq)` — genera un paquete START (seq par) o END (seq impar)
+**Solucion propuesta (proximo paso):**
+1. Cerrar SignalRgbService antes de cargar el plugin KX-500
+2. O configurar el plugin para usar FILE_SHARE_RW (ya lo hace internamente)
+3. O reportar a SignalRGB para que agregen el KX-500 a su lista oficial
 
-**Secuencia de Initialize (v2.0.1):**
-```
-1. set_endpoint(0x03)
-2. HANDSHAKE               (1 paquete, 64B con VID/PID)
-3. 15x START/END heartbeat (paquetes 04 01 00 01 / 04 02 00 02)
-4. pause(10)
-5. brightness MAX         (level 4)
-6. pause(10)
-7. color test             (azul)
-```
+---
 
-**Verificacion:**
-- `node --check KX500_Plugin.js` → OK
-- Test Python con handshake completo: 16/16 paquetes OK + solid color OK + visual confirmado
+## v2.0.1 (2026-08-29) — Handshake completo de 16 paquetes (REVERTIDO)
+
+**Cambio aplicado:** `Initialize()` envia 16 paquetes del handshake.
+
+**Por que fue revertido:** El log de SignalRGB mostro que el heartbeat de 15
+paquetes causa `ERROR_OPERATION_ABORTED` en HID overlapped I/O. El comentario
+del plugin v0.6.1 ya advertia de esto:
+> "v0.6.1: QUITAR heartbeat (causaba ERROR_OPERATION_ABORTED)"
 
 ---
 
 ## v2.0.0 (2026-08-28) — REVERT a v0.5.x + fix byte 2
 
 **Cambio:** revertir el plugin a la version v0.5.1/v0.6.1 que controlaba el teclado, con el fix del byte 2 = 0x01 (en vez de 0x03 que era incorrecto).
-
-**Por que:** el bug del byte 2 causaba que el firmware ignorara el solid color (aceptaba brightness=0 como valido pero no colores RGB arbitrarios).
 
 **Estructura del paquete (confirmado por capturas USBPcap + test Python):**
 ```
