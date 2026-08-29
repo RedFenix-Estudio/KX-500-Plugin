@@ -1,9 +1,11 @@
 /**
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  KX-500 SignalRGB Add-on v2.0.0                                 ║
+ * ║  KX-500 SignalRGB Add-on v2.0.1                                 ║
  * ║  Checkpoint KX-500 (NA-KB-1001) — Full-size US ANSI, 104 keys    ║
  * ║                                                                  ║
- * ║  v2.0.0 — REVERT a v0.5.x + v0.6.1 (que SÍ tomaba control)      ║
+ * ║  v2.0.1 — RE completo de HidServ.dll + test Python confirma que   ║
+ * ║           el firmware SÍ responde a HidD_SetOutputReport con el   ║
+ * ║           handshake de 16 paquetes.                              ║
  * ║                                                                  ║
  * ║  HISTORIA del journey:                                           ║
  * ║    v0.5.1: device.write(64B) + device.pause(5/10) -> CONTROLABA   ║
@@ -12,17 +14,24 @@
  * ║    v0.6.1: QUITAR heartbeat (causaba ERROR_OPERATION_ABORTED)    ║
  * ║    v1.0.0: rewrite mio - HID pero sin device.pause -> 0x57     ║
  * ║    v1.2.0-1.7.0: intentos de control_transfer / rawusb -> NADA    ║
+ * ║    v2.0.0: REVERT a v0.5.1 + fix byte 2 = 0x01                  ║
+ * ║    v2.0.1: agregar handshake de 16 paquetes (descubierto via RE)  ║
  * ║                                                                  ║
- * ║  LECCION: las versiones v0.5.1 + v0.5.2 + v0.6.1 SÍ funcionaban ║
- * ║  parcialmente. El bug de v1.0.0+ fue haber QUITADO los          ║
- * ║  device.pause() que el firmware necesita.                          ║
+ * ║  RE profundo (2026-08-29) mostro que:                            ║
+ * ║    - El .exe delega toda comunicacion a HidServ.dll              ║
+ * ║    - HidServ.dll usa HidD_SetOutputReport (via WriteFile)        ║
+ * ║    - El firmware SÍ acepta Output Reports, NO Feature Reports    ║
+ * ║    - El driver oficial envia 16 paquetes antes de cualquier      ║
+ * ║      comando RGB: handshake + 15 START/END alternados             ║
+ * ║    - Test Python (HidD_SetOutputReport) confirmo que el firmware   ║
+ * ║      responde y el teclado cambia de color                       ║
  * ║                                                                  ║
- * ║  Protocolo (confirmado por 16 capturas USBPcap + decompilacion): ║
+ * ║  Protocolo (confirmado por 16 capturas USBPcap + decompilacion +  ║
+ * ║  test Python con HidD_SetOutputReport):                           ║
  * ║    - Type: "hid" (no rawusb)                                    ║
  * ║    - device.write(64B) a Output Report (Report ID 0x04)         ║
  * ║    - device.pause(5-10ms) entre writes (firmware necesita tiempo) ║
- * ║    - 1er write = "handshake" (04 A2 03 04 2C 00 00 00 55 AA...) ║
- * ║    - writes subsiguientes = RGB data (04 [SEQ] cmd...)           ║
+ * ║    - Inicializacion: 16 paquetes (1 handshake + 15 START/END)     ║
  * ║    - Sin heartbeat wrapper (v0.6.1 fix)                          ║
  * ║                                                                  ║
  * ║  Estructura del paquete (todos los 64B):                         ║
@@ -101,6 +110,20 @@ const HANDSHAKE = [
     0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
+// "Heartbeat" = pares START/END que el driver oficial envia antes/despues
+// de cada comando. Visto en USBPcap: 04 01 00 01 (START) y 04 02 00 02 (END).
+// v2.0.1: el handshake COMPLETO es 16 paquetes:
+//   - 1x HANDSHAKE (inicializacion con VID/PID)
+//   - 15x START/END alternados (heartbeat para sync)
+//
+// Test Python (2026-08-29) confirmo que con 16 paquetes el firmware responde.
+// Sin el heartbeat, algunos firmwares quedan en estado "no inicializado" y descartan RGB data.
+function buildHeartbeatPair(seq) {
+    // seq debe ser par: 0=START, 1=END, 2=START, 3=END, ...
+    const cmd = (seq % 2 === 0) ? 0x01 : 0x02;
+    return pad64([REPORT_ID, cmd, 0x00, cmd]);
+}
+
 // ════════════════════════════════════════════════════════════════════
 // COMANDOS — todos confirmados por captura individual
 // ════════════════════════════════════════════════════════════════════
@@ -161,10 +184,16 @@ function writeOutput(packet) {
 }
 
 function writeHandshake() {
-    try { device.log('[KX500] Sending handshake...'); } catch (_) {}
+    try { device.log('[KX500] Sending handshake (16 packets)...'); } catch (_) {}
+    // Paquete 0: HANDSHAKE completo (con VID/PID/version)
     writeOutput(HANDSHAKE);
     try { device.pause(10); } catch (_) {}
-    try { device.log('[KX500] Handshake sent'); } catch (_) {}
+    // Paquetes 1-15: heartbeat START/END alternados
+    for (let i = 1; i <= 15; i++) {
+        writeOutput(buildHeartbeatPair(i - 1));
+        try { device.pause(5); } catch (_) {}
+    }
+    try { device.log('[KX500] Handshake (16 packets) sent'); } catch (_) {}
 }
 
 function writeRGBPacket(packet) {
@@ -293,15 +322,20 @@ export function ConflictingProcesses() {
 }
 
 /**
- * Initialize — v0.5.1: handshake + brightness MAX + color test
+ * Initialize — v2.0.1: handshake completo de 16 paquetes + brightness + test
  *
- * Secuencia:
+ * Secuencia (replicando exactamente lo que hace el driver oficial HidServ.dll):
  * 1. set_endpoint(0x03)                   — explícitamente seleccionar el OUT
- * 2. handshake (Output Report 64B)        — abre la "conversacion" con firmware
- * 3. pause(10)
- * 4. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
- * 5. pause(10)
- * 6. color test (azul)                    — opcional, confirma que responde
+ * 2. HANDSHAKE (1 paquete con VID/PID)     — Output Report con magic 55 AA FF
+ * 3. 15x START/END heartbeat               — pares 04 01 00 01 / 04 02 00 02
+ * 4. pause(10)
+ * 5. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
+ * 6. pause(10)
+ * 7. color test (azul)                    — opcional, confirma que responde
+ *
+ * RE 2026-08-29: el driver oficial envia 16 paquetes (1 HANDSHAKE + 15 heartbeat)
+ * antes de cualquier comando RGB. Sin el heartbeat completo, el firmware
+ * queda en estado "no inicializado" y descarta los comandos.
  */
 export function Initialize() {
     try {

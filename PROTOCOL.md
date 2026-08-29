@@ -2,7 +2,17 @@
 
 > Documento vivo. Se actualiza cada vez que descubrimos un comando nuevo del driver oficial.
 >
-> **Última actualización:** 2026-08-26 — Hallazgos confirmados vía **USBPcap + Wireshark** (captura real del driver oficial en acción).
+> **Última actualización:** 2026-08-29 — **Plugin v2.0.1 deployado!** Handshake completo de 16 paquetes.
+> Test Python (`dev/tools/test_with_handshake.py`) confirmo visualmente que el firmware SÍ responde.
+> Ver `CHANGELOG.md` para la historia completa.
+>
+> Hallazgos clave:
+> - El .exe (`CHECKPOINT_KX_500.exe`) NO escribe RGB directamente. Delega todo a `HidServ.dll` (36KB).
+> - `HidServ.dll` usa DOS caminos: `HidD_SetFeature` y `WriteFile` (Output Report).
+> - El firmware SÍ acepta `HidD_SetOutputReport` (verificado en test).
+> - El firmware NO acepta `HidD_SetFeature` (retorna `ERROR_INVALID_FUNCTION`).
+> - El plugin SignalRGB funciona via `device.write()` (= `HidD_SetOutputReport`).
+> - El handshake completo de 16 paquetes (1 HANDSHAKE + 15 START/END) es CRITICO.
 
 ---
 
@@ -41,6 +51,15 @@
 **Tamaño fijo: 64 bytes** (cada paquete).
 
 **Transporte:** `device.write()` (HID Output Report), NO `device.send_report()` (Feature Report). Esto es crítico — el plugin v0.1.0 usaba feature reports, los cuales NO eran interceptados por la captura porque el KX-500 no responde a feature reports, solo a output reports.
+
+**Verificación experimental (2026-08-29):**
+
+- `HidD_SetOutputReport(handle, buffer, 64)` → **OK** (driver HID acepta el comando)
+- `HidD_SetFeature(handle, buffer, 64)` → FAIL con `ERROR_INVALID_FUNCTION` (firmware no soporta feature reports)
+- `WriteFile(handle, buffer, 64, ...)` con `FILE_FLAG_OVERLAPPED` → timeout 2 segundos
+- `CreateFileW("\\\\.\\FwCustom", ...)` → FAIL con `ERROR_FILE_NOT_FOUND` (no hay driver de kernel instalado)
+
+→ **Confirmado:** el camino correcto es `HidD_SetOutputReport`, no Feature Report.
 
 ### Heartbeat / framing (CONFIRMADO)
 
