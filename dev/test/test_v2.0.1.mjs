@@ -4,6 +4,7 @@ global.device = {
     setName: () => {},
     setSize: () => {},
     setControllableLeds: () => {},
+    set_endpoint: (ep) => console.log(`  set_endpoint(0x${ep.toString(16)})`),
     write: (data, len) => {
         const isUint8 = data instanceof Uint8Array;
         const isRegular = Array.isArray(data);

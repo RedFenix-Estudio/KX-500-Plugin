@@ -118,10 +118,17 @@ function buildBrightness(level) {
 }
 
 // Solid color RGB. SEQ se mantiene entre 0x08 y 0xFF.
-// Formato: [04] [SEQ] 03 06 03 05 00 00 R G B
+//
+// FORMATO CORRECTO del driver real (visto en 01_solid_red, 02_solid_blue,
+// 15_un_solo_color capturas):
+//   04 [SEQ] 01 06 03 05 00 00 R G B
+//
+// BYTE 2 debe ser 0x01 (no 0x03 como tenia v0.5.1 por error).
+// Eso era el bug del protocolo: el firmware ignoraba el solid color
+// porque el byte 2 era incorrecto.
 function buildSolidColor(r, g, b, seq) {
     const s = ((seq == null ? 0x08 : seq) & 0xFF);
-    return pad64([REPORT_ID, s, 0x03, 0x06, 0x03, 0x05, 0x00, 0x00, r & 0xFF, g & 0xFF, b & 0xFF]);
+    return pad64([REPORT_ID, s, 0x01, 0x06, 0x03, 0x05, 0x00, 0x00, r & 0xFF, g & 0xFF, b & 0xFF]);
 }
 
 // Efecto nativo 1..19 (1-15 formato A, 16-19 formato B).
@@ -289,11 +296,12 @@ export function ConflictingProcesses() {
  * Initialize — v0.5.1: handshake + brightness MAX + color test
  *
  * Secuencia:
- * 1. handshake (Output Report 64B)        — abre la "conversacion" con firmware
- * 2. pause(10)
- * 3. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
- * 4. pause(10)
- * 5. color test (azul)                    — opcional, confirma que responde
+ * 1. set_endpoint(0x03)                   — explícitamente seleccionar el OUT
+ * 2. handshake (Output Report 64B)        — abre la "conversacion" con firmware
+ * 3. pause(10)
+ * 4. brightness MAX (level 4)             — fundamental, sino firmware queda en 0
+ * 5. pause(10)
+ * 6. color test (azul)                    — opcional, confirma que responde
  */
 export function Initialize() {
     try {
@@ -305,6 +313,18 @@ export function Initialize() {
     } catch (err) {
         try { device.log(`[KX500] init error: ${err.message}`); } catch (_) {}
     }
+
+    // CRITICO: seleccionar explícitamente el endpoint OUT 0x03.
+    // Sin esto, SignalRGB podria estar usando el endpoint equivocado.
+    // El Validate() matchea por TLC FF1C:0092, pero hay 5 endpoints
+    // (uno por TLC). set_endpoint() fuerza el correcto.
+    try {
+        device.set_endpoint(0x03);
+        try { device.log('[KX500] Endpoint set to 0x03 OUT'); } catch (_) {}
+    } catch (err) {
+        try { device.log(`[KX500] set_endpoint failed: ${err.message}`); } catch (_) {}
+    }
+
     _seq = 0x08;
 
     // 1) Handshake
