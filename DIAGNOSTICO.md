@@ -16,8 +16,10 @@ Conviene separar dos cosas que se estaban mezclando.
 |---|---|---|---|
 | `buildSolidColor` byte 2 | `0x03` | **`0x01`** | `prueba del test 1.pcapng` |
 | `Render()` sin dirty-check | 20 writes/s siempre | solo si el color cambia |evita colisión write/read |
+| Sin transacción | comandos sueltos | **`START` → paquetes → `END`** | 125/125 transacciones bien formadas |
 
-Ambos corregidos en `KX500_Plugin.js` v2.5.0.
+Los dos primeros se corrigieron en `KX500_Plugin.js` v2.5.0; el tercero en
+v3.0.0 (ver §11).
 
 ### (b) El error 995 — sin causa raíz identificada
 
@@ -210,27 +212,33 @@ filesystem. Cualquier diseño tipo "bridge" es inviable desde el plugin.
 
 ## 7. Estado del plugin
 
-`KX500_Plugin.js` v2.5.0 — `node --check` limpio, UTF-8 sin doble encoding:
+`KX500_Plugin.js` v3.0.0 — `node --check` limpio, UTF-8 válido:
 
-- `Type()` = `rawusb` — SignalRGB mapea `device.write()` a libusb
+- `Type()` = `hid`
 - `Validate()` = `endpoint.interface === 1`
-- Protocolo verificado: `buildBrightness`, `buildEffect`, `buildSolidColor`
-- `Render()` con dirty-check + backoff exponencial
+- Protocolo verificado: `buildBrightness`, `buildKeyNormallyOn`,
+  `buildGlobalColor`
+- **Cada operación va envuelta en una transacción** `START` → paquetes → `END`
+  (esto es nuevo en v3.0.0 — ver §11)
+- `Render()` con dirty-check
+
+`node dev/test/validate_v3.js` → **16/16 OK** (layout de 104 teclas, bytes de
+cada paquete y orden de la transacción).
 
 ### Qué falta
 
 **Probarlo en SignalRGB.** Es el único paso que no puedo ejecutar yo.
 
-Si `rawusb` con libusb funciona → el diagnóstico se cierra: el problema era el
-stack HID de SignalRGB con este device.
+Si v3.0.0 (hid + transacciones) funciona → el diagnóstico se cierra: el
+problema era el framing del protocolo, no el transporte.
 
 Si no funciona, siguiente paso diagnóstico:
 
-1. Enlazar el device con **libusbK** vía Zadig, para que libusb tenga acceso
-   real y eliminar una variable más.
-2. Capturar con **USBPcap mientras corre SignalRGB con el plugin**, y comparar
+1. Capturar con **USBPcap mientras corre SignalRGB con el plugin**, y comparar
    contra las capturas del driver oficial. Eso muestra si SignalRGB envía los
    mismos bytes y qué responde el firmware.
+2. Enlazar el device con **libusbK** vía Zadig, para eliminar una variable más
+   del lado del transporte.
 
 ---
 
@@ -309,3 +317,51 @@ Copia de seguridad completa en:
 
 Accion recomendada: revisar el disco E: (chkdsk E: /scan o CrystalDiskInfo)
 y respaldar el proyecto completo.
+
+---
+
+## 11. v3.0.0 — las transacciones START/END (2026-10-21)
+
+**Hallazgo:** el driver oficial no manda comandos sueltos. Cada cambio va
+envuelto en una transacción:
+
+```
+04 01 00 01   -> START
+   ...comandos...
+04 02 00 02   -> END
+```
+
+Medido sobre las **18 capturas USBPcap**: **125 transacciones, todas bien
+formadas**. Sin el `END` el firmware no aplica el contenido y sigue ejecutando
+su animación — de ahí el parpadeo con el color anterior.
+
+Secuencia canónica de "un solo color" (`teclado_un_solo_color.pcapng`):
+
+```
+04 01 00 01                                     START
+04 0B 00 06 01 04 00 00 00                      KEY_NORMALLY_ON = 0
+04 8E 00 06 03 05 00 00 80 00 00                COLOR = (128,0,0)
+04 02 00 02                                     END
+```
+
+**Corrección importante:** `06 01 00` (ID de animación) **no** se manda para
+color sólido. Ese comando *cambia de efecto*; mandarlo al inicializar es
+justo lo que ponía al teclado en modo animación. La v2.x sí lo mandaba.
+
+**Descubrimiento adicional (per-key, aún sin mapear):** el teclado tiene
+**126 LEDs direccionables**, no 104. El frame per-key son 7 paquetes `11 36`
+de 54 bytes = 378 bytes. Falta el mapeo LED → tecla física.
+
+**Herramientas nuevas:** `dev/tools/dump_reports.py` (vuelca en orden todos los
+Output Reports de un `.pcapng`) y `dev/test/validate_v3.js` (valida layout y
+bytes del plugin v3).
+
+**El 995 sigue sin causa raíz identificada.** Lo que cambió en v3 es el
+*framing* del protocolo, medido contra las capturas. El error 995 de
+`device.write()` no se ha reproducido ni explicado todavía.
+
+### Nota sobre el conteo de capturas
+
+Hay **18 capturas únicas**. Existe una 19ª copia byte a byte idéntica
+(`dev/captures/teclado_captura_mixta.pcapng` = `teclado_captura_todo.pcapng`),
+y por eso algunas notas anteriores decían 19.

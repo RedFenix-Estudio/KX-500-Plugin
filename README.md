@@ -18,7 +18,7 @@ Permite que SignalRGB controle las luces RGB del KX-500, incluyendo:
 
 **Lo que aún NO funciona (pendiente capturas individuales):**
 - ⏳ Per-key RGB preciso (actualmente envía color promedio)
-- ⏳ Detección exacta de zonas RGB (sospechamos ~16-19, no 104)
+- ⏳ Mapeo LED → tecla física (se midieron **126 LEDs direccionables**, no 104)
 - ⏳ Efectos nativos del KX-500 (breathing/wave del firmware)
 
 ---

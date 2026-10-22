@@ -143,6 +143,10 @@ El handshake `04 A2 03 04 2C 00 00 00 55 AA ...` contiene:
 
 ⚠️ **Implicación:** El KX-500 podría tener **~19 zonas RGB** (no 104 LEDs individuales). El driver permite "pintar per-key" pero internamente puede mapear a zonas.
 
+> ❌ **DESCONTADO (2026-10-21).** Esta hipótesis era incorrecta. El frame per-key
+> medido en las capturas son 7 paquetes `11 36` de 54 bytes = **378 bytes = 126 LEDs
+> RGB direccionables**, no 19 zonas. Ver `PROTOCOL_VERIFIED.md` §5.
+
 ### Color data packed (HALLAZGO NUEVO)
 
 Mirando el contenido de los comandos "tipo B" (RGB data):

@@ -271,7 +271,7 @@ def analyze(path, filter_kx500=False, payload_only=False):
                 print(f"    Bytes variables ({len(variable_positions)}): {variable_positions[:32]}{'...' if len(variable_positions) > 32 else ''}")
                 # Sugerencia
                 if len(constant_positions) >= 8:
-                    print(f"    � Sugerencia: el header podría ser los primeros {min(8, len(constant_positions))} bytes")
+                    print(f"    - Sugerencia: el header podría ser los primeros {min(8, len(constant_positions))} bytes")
             break  # Solo analizamos la longitud más común
 
 

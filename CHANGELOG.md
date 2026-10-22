@@ -1,5 +1,64 @@
 # Changelog
 
+## v3.0.0 (2026-10-21) — Transacciones START/END: el protocolo real del driver
+
+**Hallazgo:** el driver oficial NO manda comandos sueltos. Cada cambio va
+envuelto en una transacción:
+
+```
+04 01 00 01   -> START
+   ...comandos...
+04 02 00 02   -> END
+```
+
+En las 18 capturas USBPcap hay **125 transacciones, todas bien formadas**.
+Sin el `END` el firmware no aplica el contenido y sigue con su animación
+(de ahí el parpadeo con el color anterior).
+
+Secuencia canónica de "un solo color" (`teclado_un_solo_color.pcapng`):
+
+```
+04 01 00 01                                     START
+04 0B 00 06 01 04 00 00 00                      KEY_NORMALLY_ON = 0
+04 8E 00 06 03 05 00 00 80 00 00                COLOR = (128,0,0)
+04 02 00 02                                     END
+```
+
+**Cambios:**
+1. `sendTransaction()` envuelve cada operación: `START` -> paquetes -> `END`.
+2. `Initialize()` = handshake (sin envolver) + transacción con brillo 4.
+3. `Render()` = transacción `06 01 04` + `06 03 05`, solo si el color cambió.
+4. Se eliminó `buildEffect()` (`06 01 00`): ese comando **cambia de efecto**,
+   no toma el control. Mandarlo al inicializar es lo que ponía al teclado en
+   modo animación y lo que provocaba el parpadeo.
+5. `Type()` vuelve a `hid`.
+
+**Descubrimiento adicional (per-key, aún sin mapear):** el teclado tiene
+**126 LEDs direccionables**, no 104. El frame per-key son 7 paquetes `11 36`
+de 54 bytes = 378 bytes.
+
+**Verificación:** `node dev/test/validate_v3.js` -> **16/16 OK** (layout de 104
+teclas, bytes de cada paquete y orden de la transacción).
+
+Detalle completo en `PROTOCOL_VERIFIED.md` §2.
+
+---
+
+## v2.5.0 (2026-10-10) — Protocolo verificado contra las capturas + fix del byte 2
+
+**Cambios:**
+1. `buildSolidColor()`: byte 2 de `0x03` a **`0x01`**, medido en
+   `prueba del test 1.pcapng`.
+2. `Render()` con dirty-check: solo escribe si el color cambió (antes
+   escribía ~20 veces/s en bucle).
+3. `Type()` = `rawusb` (SignalRGB mapea `device.write()` a libusb).
+4. 12 comandos mapeados desde las 18 capturas USBPcap del driver oficial.
+
+**Pendiente:** faltaba probarlo en SignalRGB. El error 995 de `device.write()`
+sigue **sin causa raíz identificada** — ver `DIAGNOSTICO.md` §1(b).
+
+---
+
 ## v2.0.3 (2026-08-29) — FIX: pause(100ms) en Initialize + quitar set_endpoint
 
 **Diagnostico final:** el primer write (handshake) SIEMPRE funciona, pero el segundo

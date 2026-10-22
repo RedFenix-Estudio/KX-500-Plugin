@@ -33,6 +33,11 @@ dist/
 build/
 *.zip
 
+# Python bytecode (no va al repo)
+__pycache__/
+*.pyc
+*.pyo
+
 # Secrets / locals
 .env
 .env.local
